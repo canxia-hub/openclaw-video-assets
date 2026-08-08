@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build staging / caches
+ui-dist-next/
+**/*.tsbuildinfo
+.vite/
+
+# Runtime repository data (never commit local asset libraries)
+.openclaw-video-assets/
+repository/
+storage/
+staging/
+auth/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Logs, temp files, and OS noise
+*.log
+logs/
+tmp/
+temp/
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*password*
+*secret*
+*token*
+
+# OpenClaw local state
+.openclaw/

@@ -1,0 +1,72 @@
+{
+  "name": "@openclaw-lab/video-assets-plugin",
+  "version": "1.4.0",
+  "type": "module",
+  "private": false,
+  "description": "OpenClaw video production asset repository, project canvas, generation handoff, and audio/video asset management plugin.",
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "video-production",
+    "asset-management",
+    "project-management",
+    "production-canvas",
+    "dreamina",
+    "seedance",
+    "doubao",
+    "suno"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/canxia-hub/openclaw-video-assets.git"
+  },
+  "homepage": "https://github.com/canxia-hub/openclaw-video-assets#readme",
+  "bugs": {
+    "url": "https://github.com/canxia-hub/openclaw-video-assets/issues"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": ">=2026.3.24-beta.2"
+    }
+  },
+  "scripts": {
+    "build:ui": "npm --prefix ui-src run build",
+    "check:syntax": "node --check src/index.js && node --check src/service.js && node --check src/storage.js && node --check src/media-probe.js && node --check src/schema.js && node --check src/security.js && node --check src/doubao-audio-adapter.js && node --check src/kie-suno-adapter.js",
+    "check:preflight": "node scripts/plugin-preflight.mjs",
+    "check:security": "node scripts/security-smoke-test.mjs",
+    "check:service": "node scripts/service-smoke-test.mjs",
+    "check:consistency": "node scripts/service-consistency-test.mjs",
+    "check:report": "node scripts/project-report-test.mjs",
+    "check:refs": "node scripts/project-ref-lifecycle-test.mjs",
+    "check:media": "node scripts/media-fixtures-test.mjs",
+    "check:file-api": "node scripts/file-api-test.mjs",
+    "check:staging": "node scripts/staging-flow-test.mjs",
+    "check:canvas": "node scripts/canvas-smoke-test.mjs",
+    "check:canvas-widget": "node scripts/canvas-widget-state-test.mjs",
+    "check:canvas-widget-render": "node scripts/canvas-widget-render-test.mjs",
+    "check:canvas-generation-slot": "node scripts/canvas-generation-slot-test.mjs",
+    "check:canvas-review-writeback": "node scripts/canvas-review-writeback-test.mjs",
+    "check:dreamina-handoff": "node scripts/dreamina-handoff-test.mjs",
+    "check:dreamina-cli-plan": "node scripts/dreamina-cli-plan-test.mjs",
+    "check:dreamina-cli-video": "node scripts/dreamina-cli-video-generate-test.mjs",
+    "check:doubao-audio-plan": "node scripts/doubao-audio-plan-test.mjs",
+    "check:doubao-audio-generate": "node scripts/doubao-audio-generate-test.mjs",
+    "check:doubao-audio-live": "node scripts/doubao-audio-live-smoke-test.mjs",
+    "check:kie-suno-plan": "node scripts/kie-suno-plan-test.mjs",
+    "check:kie-suno-generate": "node scripts/kie-suno-generate-test.mjs",
+    "check:taxonomy": "node scripts/taxonomy-smoke-test.mjs",
+    "check:taxonomy-continuity": "node scripts/taxonomy-continuity-test.mjs",
+    "check:derived-integrity": "node scripts/derived-integrity-test.mjs",
+    "check:derived-generation": "node scripts/derived-generation-test.mjs",
+    "check:phase-f": "npm run check:syntax && npm run check:preflight && npm run check:canvas && npm run check:canvas-widget && npm run check:canvas-widget-render && npm run check:canvas-generation-slot && npm run check:canvas-review-writeback && npm run check:dreamina-handoff && npm run check:dreamina-cli-plan && npm run check:dreamina-cli-video",
+    "hash-password": "node scripts/hash-password.mjs",
+    "check": "npm run check:syntax && npm run check:preflight && npm run check:security && npm run check:service && npm run check:consistency && npm run check:report && npm run check:refs && npm run check:media && npm run check:file-api && npm run check:staging && npm run check:canvas && npm run check:canvas-widget && npm run check:canvas-widget-render && npm run check:canvas-generation-slot && npm run check:canvas-review-writeback && npm run check:dreamina-handoff && npm run check:dreamina-cli-plan && npm run check:dreamina-cli-video && npm run check:doubao-audio-plan && npm run check:doubao-audio-generate && npm run check:kie-suno-plan && npm run check:kie-suno-generate && npm run check:taxonomy && npm run check:taxonomy-continuity && npm run check:derived-integrity && npm run check:derived-generation"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "video-assets-project-material",
+  "description": "video-assets 插件专属项目与素材管理规范。默认中文命名，按场景、角色、服装、装备、道具、音频、风格参考等主体分类安放，并要求资产文件夹配套 Markdown 信息卡。",
+  "tags": ["video-assets", "asset-management", "chinese-naming", "classification", "production"],
+  "openclaw": {
+    "emoji": "🗂️",
+    "always": false
+  }
+}

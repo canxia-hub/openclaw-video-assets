@@ -1,0 +1,132 @@
+{
+  "id": "video-assets",
+  "name": "视频资产库",
+  "description": "面向视频生产的项目资产库、制作画布与生成写回插件。",
+  "version": "1.4.0",
+  "contracts": {
+    "tools": [
+      "video_asset_ingest",
+      "video_asset_search",
+      "video_asset_get",
+      "video_asset_update_rights",
+      "video_asset_create_version",
+      "video_asset_create_branch",
+      "video_asset_save_copy",
+      "video_asset_lineage",
+      "video_asset_register_derived_file",
+      "video_asset_generate_derived_file",
+      "video_asset_derived_files",
+      "video_asset_integrity_scan",
+      "video_asset_classify",
+      "video_asset_get_classification",
+      "video_asset_taxonomy_report",
+      "video_entity_create",
+      "video_entity_search",
+      "video_entity_link_asset",
+      "video_asset_annotate",
+      "video_asset_annotations",
+      "video_asset_update_annotation",
+      "video_canvas_agent_context",
+      "video_canvas_apply_production_template",
+      "video_canvas_create_revision_card",
+      "video_canvas_create_generation_slot",
+      "video_canvas_create",
+      "video_canvas_delete_shape",
+      "video_audio_doubao_generate",
+      "video_audio_doubao_plan",
+      "video_audio_kie_suno_generate",
+      "video_audio_kie_suno_plan",
+      "video_canvas_doubao_audio_generate",
+      "video_canvas_doubao_audio_plan",
+      "video_canvas_kie_suno_audio_generate",
+      "video_canvas_kie_suno_audio_plan",
+      "video_canvas_dreamina_cli_generate_video",
+      "video_canvas_dreamina_cli_plan",
+      "video_canvas_export_annotation_brief",
+      "video_canvas_fill_generation_slot",
+      "video_canvas_generation_handoff",
+      "video_canvas_generation_package",
+      "video_canvas_get_selection",
+      "video_canvas_get_view_state",
+      "video_canvas_get",
+      "video_canvas_insert_generated_asset",
+      "video_canvas_link_shapes",
+      "video_canvas_lint",
+      "video_canvas_register_review_annotation",
+      "render_video_assets_canvas_widget",
+      "video_canvas_save_selection",
+      "video_canvas_save_snapshot",
+      "video_canvas_save_view_state",
+      "video_canvas_search",
+      "video_canvas_unlink_shapes",
+      "video_canvas_update_generation_slot",
+      "video_canvas_update_revision_card_status",
+      "video_canvas_upsert_shape",
+      "video_canvas_widget_context",
+      "video_project_create",
+      "video_project_update_spec",
+      "video_project_add_asset_ref",
+      "video_project_update_asset_ref",
+      "video_project_remove_asset_ref",
+      "video_project_refs",
+      "video_project_asset_report",
+      "video_project_continuity_report"
+    ]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "repositoryRoot": {
+        "type": "string",
+        "description": "素材与项目仓库根目录，默认使用 ~/.openclaw-video-assets。"
+      },
+      "allowPhysicalDelete": {
+        "type": "boolean",
+        "description": "预留配置。当前版本保持关闭，仅支持归档或软删除语义。"
+      },
+      "auth": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "面向公网访问时的插件级二次认证；如网关认证可用，仍需保留网关认证。",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "启用插件密码与会话认证，默认开启。"
+          },
+          "adminPasswordHash": {
+            "type": "string",
+            "description": "由安全管理器生成的密码哈希。不要保存明文密码；本字段仅为兼容保留，本地私有部署优先使用哈希文件。"
+          },
+          "adminPasswordHashFile": {
+            "type": "string",
+            "description": "保存管理员密码哈希的本地私有文件路径，推荐优先使用。"
+          },
+          "sessionTtlMinutes": {
+            "type": "number",
+            "minimum": 5,
+            "description": "插件会话有效时长，单位分钟，默认 480。"
+          },
+          "maxLoginAttempts": {
+            "type": "number",
+            "minimum": 1,
+            "description": "同一登录窗口内每个地址允许的最大失败次数，默认 5。"
+          },
+          "loginWindowMinutes": {
+            "type": "number",
+            "minimum": 1,
+            "description": "登录限流窗口，单位分钟，默认 10。"
+          },
+          "allowedOrigins": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "公网部署时可选的浏览器来源白名单；留空表示依赖网关或代理的来源策略。"
+          }
+        }
+      }
+    }
+  }
+}

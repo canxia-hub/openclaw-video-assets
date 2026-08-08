@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+/*
+ * 设计 tokens —— 依据调研报告 §5.1 创作工具暗色惯例
+ * 层级靠亮度差 + 1px 半透明描边，不用阴影。
+ */
+@theme {
+  --color-bg-canvas: #0d0f12;      /* 画布/最底层工作区 */
+  --color-bg-base: #101318;        /* 页面基底 */
+  --color-bg-raise1: #16181d;      /* 侧边栏/面板 */
+  --color-bg-raise2: #1f2329;      /* 卡片/输入框 */
+  --color-bg-hover: #242830;       /* hover 态 */
+  --color-border-subtle: rgba(255, 255, 255, 0.09);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
+
+  --color-text-primary: #e6e8eb;
+  --color-text-secondary: #9ba1a8;
+  --color-text-faint: #838b9c;   /* AA 对比度修正：#16181d 上 ≈5.2:1，#1f2329 上 ≈4.6:1 */
+
+  --color-accent: #6e7cf8;         /* 靛蓝主强调 */
+  --color-accent-hover: #7c8cf8;
+  --color-accent-dim: rgba(110, 124, 248, 0.14);
+
+  --color-success: #3fb950;
+  --color-warning: #d29922;
+  --color-danger: #f85149;
+  --color-info: #58a6ff;
+  --color-restricted: #e8862e;     /* 授权受限（介于 warning/danger） */
+
+  --color-canvas-dot: rgba(255, 255, 255, 0.06);
+
+  --font-sans: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-bg-base);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 细滚动条，暗色 */
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* 聚焦可达性 */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* 页面/面板动效（尊重减弱动效偏好） */
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes palette-in { from { opacity: 0; transform: translateY(-8px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes page-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.animate-fade-in { animation: fade-in 0.12s ease-out; }
+.animate-palette-in { animation: palette-in 0.12s ease-out; }
+.animate-page-in { animation: page-in 0.15s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in, .animate-palette-in, .animate-page-in { animation: none; }
+}
