@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.1 - 2026-08-08
+
+### Changed
+
+- Added the MIT License for public reuse and distribution.
+- Updated package and plugin manifest versions to `1.4.1`.
+- Updated README licensing language to point at the checked-in `LICENSE` file.
+
 ## 1.4.0 - 2026-08-08
 
 ### Added

@@ -1,8 +1,9 @@
 {
   "name": "@openclaw-lab/video-assets-plugin",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "type": "module",
   "private": false,
+  "license": "MIT",
   "description": "OpenClaw video production asset repository, project canvas, generation handoff, and audio/video asset management plugin.",
   "keywords": [
     "openclaw",

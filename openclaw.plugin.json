@@ -2,7 +2,7 @@
   "id": "video-assets",
   "name": "视频资产库",
   "description": "面向视频生产的项目资产库、制作画布与生成写回插件。",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "contracts": {
     "tools": [
       "video_asset_ingest",
