@@ -21,6 +21,10 @@ try {
     fps: 24
   });
   const canvas = svc.createCanvas({ project_id: project.project_id, title: "Generation Slot Canvas" });
+  assert.throws(
+    () => svc.createGenerationSlot({ canvas_id: canvas.canvas_id, required_refs: ["draft_output"] }),
+    /required_refs 只能包含输入槽 key/
+  );
   const slot = svc.createGenerationSlot({
     canvas_id: canvas.canvas_id,
     generation_type: "image_to_video",

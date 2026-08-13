@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.4.2 - 2026-08-13
+
+### Fixed
+
+- Gateway RPC callback contract now uses `respond(ok, payload, error, meta)`; the previous single-argument object form could make CLI calls time out even when the plugin completed the work.
+- Asset, project, canvas, entity, and commit search now applies query filters on the full dataset before pagination, with stable secondary sort keys and uniform offset/limit boundary validation.
+- `video_asset_ingest` and `video_asset_update_metadata` now share strict metadata validation before any file copy or database write (title 1–512 chars, description up to 65536 chars, up to 64 tags of 128 chars each), and failures leave no partial writes.
+- Workbench selection restore from the backend now runs once per selection version key, so clicking an edge is no longer immediately overwritten back to the primary shape.
+
+### Added
+
+- New regression and robustness suites: `asset-metadata-test`, `gateway-rpc-contract-test`, `robustness-regression-test`, `extended-robustness-regression-test`, `canvas-governance-regression-test`, `localization-regression-test`, plus CDP UI verification scripts (`cdp-check-p4`, `cdp-eval`, `ui-screenshot`).
+
 ## 1.4.1 - 2026-08-08
 
 ### Changed

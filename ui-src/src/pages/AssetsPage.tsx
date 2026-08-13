@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate, useParams } from "react-router-dom";
 import { rpc, type AssetSummary } from "../lib/rpc";
 import { useInspector } from "../lib/inspector";
 import { Badge, fmtTime, licenseBadge, riskBadge } from "../components/ui";
@@ -39,6 +40,8 @@ function FilterSelect({
 }
 
 export default function AssetsPage() {
+  const { assetId } = useParams<{ assetId?: string }>();
+  const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [submitted, setSubmitted] = useState("");
   const [mediaType, setMediaType] = useState("");
@@ -59,6 +62,14 @@ export default function AssetsPage() {
     if (risk) list = list.filter((a) => (a.risk_level ?? "unknown") === risk);
     return list;
   }, [q.data, mediaType, license, risk]);
+
+  useEffect(() => {
+    if (assetId && (selection?.kind !== "asset" || selection.id !== assetId)) {
+      select({ kind: "asset", id: assetId });
+    }
+  }, [assetId, select, selection]);
+
+  const routeAssetMissing = Boolean(assetId && q.data && !items.some((item) => item.asset_id === assetId));
 
   return (
     <div className="p-6">
@@ -111,6 +122,11 @@ export default function AssetsPage() {
           {q.error instanceof Error ? q.error.message : "加载失败"}
         </div>
       )}
+      {routeAssetMissing && (
+        <div className="mb-4 rounded-md border border-danger/40 bg-danger/10 p-3 text-sm text-danger" data-testid="asset-route-missing">
+          当前列表未找到路由指定资产：<span className="font-mono text-xs">{assetId}</span>。右侧检查器会按资产编号读取，不会静默选中其他资产。
+        </div>
+      )}
 
       {q.data && (
         <div className="overflow-hidden rounded-lg border border-border-subtle">
@@ -133,7 +149,11 @@ export default function AssetsPage() {
                 return (
                   <tr
                     key={a.asset_id}
-                    onClick={() => select({ kind: "asset", id: a.asset_id })}
+                    data-asset-id={a.asset_id}
+                    onClick={() => {
+                      select({ kind: "asset", id: a.asset_id });
+                      navigate(`/assets/${a.asset_id}`);
+                    }}
                     className={`cursor-pointer border-b border-border-subtle transition-colors last:border-0 ${
                       active ? "bg-accent-dim" : "hover:bg-bg-hover"
                     }`}

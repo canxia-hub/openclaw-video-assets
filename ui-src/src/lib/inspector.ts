@@ -1,10 +1,11 @@
 import { create } from "zustand";
-import type { CanvasShape } from "./rpc";
+import type { CanvasEdge, CanvasShape } from "./rpc";
 
 /** 检查器当前选中对象。页面只负责 select，检查器面板自行拉取详情（shape 直接携带数据）。 */
 export type InspectorSelection =
   | { kind: "asset" | "project"; id: string }
   | { kind: "shape"; id: string; shape: CanvasShape }
+  | { kind: "edge"; id: string; edge: CanvasEdge; source?: CanvasShape; target?: CanvasShape }
   | null;
 
 interface InspectorState {

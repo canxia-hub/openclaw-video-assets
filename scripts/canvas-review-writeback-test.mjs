@@ -8,10 +8,12 @@ const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ova-review-writeba
 const repo = path.join(tmp, "repo");
 const source = path.join(tmp, "reference.txt");
 const generated = path.join(tmp, "generated-output.txt");
+const generatedSecond = path.join(tmp, "generated-output-second.txt");
 const filledGenerated = path.join(tmp, "filled-generated-output.txt");
 const revisedGenerated = path.join(tmp, "revised-generated-output.txt");
 await fs.promises.writeFile(source, "source reference", "utf8");
 await fs.promises.writeFile(generated, "generated output", "utf8");
+await fs.promises.writeFile(generatedSecond, "generated output second", "utf8");
 await fs.promises.writeFile(filledGenerated, "filled generated output", "utf8");
 await fs.promises.writeFile(revisedGenerated, "revised generated output", "utf8");
 
@@ -120,6 +122,7 @@ try {
     file_path: generated,
     title: "Generated Output v01",
     source: { source_type: "test_generator", license_hint: "test fixture" },
+    idempotency_key: "qa-insert-custom-key",
     license_status: "unknown",
     risk_level: "unknown",
     classification: { domain: "delivery", type: "draft_output" },
@@ -128,6 +131,14 @@ try {
   });
   assert.ok(inserted.asset.asset_id);
   assert.equal(inserted.project_ref.project_id, project.project_id);
+  assert.equal(inserted.project_ref.role, "generated_output");
+  assert.equal(inserted.project_ref.status, "active");
+  assert.equal(inserted.asset.license_status, "unknown");
+  assert.equal(inserted.asset.risk_level, "unknown");
+  assert.equal(inserted.asset.sources.filter((item) => item.source_type === "test_generator").length, 1);
+  assert.equal(typeof inserted.idempotent.key, "string");
+  assert.equal(inserted.idempotent.key, "qa-insert-custom-key");
+  assert.equal(inserted.shape.props.idempotency_key, "qa-insert-custom-key");
   assert.equal(inserted.shape.subject_type, "project_ref");
   assert.equal(inserted.shape.props.role, "generated_output");
   assert.equal(inserted.shape.props.slot_shape_id, slot.shape_id);
@@ -140,6 +151,21 @@ try {
   const canvasAfter = svc.getCanvas({ canvas_id: canvas.canvas_id });
   assert.ok(canvasAfter.shapes.some((shape) => shape.shape_id === inserted.shape.shape_id));
   assert.ok(canvasAfter.edges.some((edge) => edge.edge_id === inserted.edge.edge_id));
+
+  const insertedSecond = await svc.insertGeneratedAsset({
+    canvas_id: canvas.canvas_id,
+    slot_shape_id: slot.shape_id,
+    file_path: generatedSecond,
+    title: "Generated Output v02 beside",
+    idempotency_key: "qa-insert-second-custom-key",
+    writeback: { placement: "right", relation_type: "derived_from" }
+  });
+  assert.equal(rectanglesOverlap(inserted.shape, insertedSecond.shape, 16), false, "同一生成槽的相邻输出不得重叠");
+
+  const layoutCanvas = svc.createCanvas({ project_id: project.project_id, title: "Auto Layout Canvas" });
+  const autoSlotA = svc.createGenerationSlot({ canvas_id: layoutCanvas.canvas_id, generation_type: "image" });
+  const autoSlotB = svc.createGenerationSlot({ canvas_id: layoutCanvas.canvas_id, generation_type: "voice" });
+  assert.equal(rectanglesOverlap(autoSlotA, autoSlotB, 16), false, "默认创建的生成槽不得重叠");
 
   const fillSlot = svc.createGenerationSlot({
     canvas_id: canvas.canvas_id,
@@ -164,6 +190,7 @@ try {
   assert.equal(filled.fill.writeback.placement, "below");
   assert.equal(filled.asset.license_status, "unknown");
   assert.equal(filled.asset.risk_level, "unknown");
+  assert.equal(filled.asset.sources.filter((item) => item.source_type === "generated_asset").length, 1);
   assert.equal(filled.shape.props.role, "revision_output");
   assert.equal(filled.shape.props.writeback_semantic, "revision");
   assert.equal(filled.shape.props.revision_index, 1);
@@ -182,6 +209,7 @@ try {
     file_path: filledGenerated
   });
   assert.equal(duplicateFilled.idempotent.reused, true);
+  assert.equal(typeof duplicateFilled.idempotent.key, "string");
   assert.equal(duplicateFilled.asset.asset_id, filled.asset.asset_id);
   assert.equal(duplicateFilled.project_ref.reference_id, filled.project_ref.reference_id);
   assert.equal(duplicateFilled.shape.shape_id, filled.shape.shape_id);
@@ -270,7 +298,7 @@ try {
   assert.equal(canvasAfterDuplicateRevision.edges.length, canvasBeforeDuplicateRevision.edges.length);
 
   const refsAfterFill = svc.listProjectRefs({ project_id: project.project_id });
-  assert.equal(refsAfterFill.length, 4);
+  assert.equal(refsAfterFill.length, 5);
   assert.equal(refsAfterFill.find((item) => item.reference_id === filled.project_ref.reference_id)?.role, "generated_output");
 
   const filledLineage = svc.lineage({ asset_id: filled.asset.asset_id });
@@ -280,4 +308,11 @@ try {
 } finally {
   svc.close();
   await fs.promises.rm(tmp, { recursive: true, force: true });
+}
+
+function rectanglesOverlap(a, b, padding = 0) {
+  return a.x < b.x + b.width + padding
+    && a.x + a.width + padding > b.x
+    && a.y < b.y + b.height + padding
+    && a.y + a.height + padding > b.y;
 }

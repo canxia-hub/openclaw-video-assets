@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { VideoAssetService } from "./service.js";
+import { createGatewayRpcHandler } from "./gateway-rpc.js";
 import {
   SecurityManager,
   applySecurityHeaders,
@@ -128,6 +129,7 @@ const TOOL_DISPLAY_NAMES = {
   video_asset_ingest: "素材入库",
   video_asset_search: "搜索素材",
   video_asset_get: "读取素材详情",
+  video_asset_update_metadata: "更新素材元数据",
   video_asset_update_rights: "更新授权与风险",
   video_asset_create_version: "创建素材版本",
   video_asset_create_branch: "创建素材分支",
@@ -197,6 +199,7 @@ const TOOL_DESCRIPTIONS_ZH = {
   video_asset_ingest: "将本地文件导入视频资产库。",
   video_asset_search: "按文本和基础筛选条件搜索视频素材。",
   video_asset_get: "读取素材、版本和分支详情。",
+  video_asset_update_metadata: "修订素材标题、描述和标签，不改动媒体文件或版本谱系。",
   video_asset_update_rights: "更新素材授权状态、风险等级并追加来源证据。",
   video_asset_create_version: "基于变更说明创建新的素材版本。",
   video_asset_create_branch: "从指定素材版本创建分支。",
@@ -436,9 +439,9 @@ function registerTools(api) {
   api.registerTool(tool("video_asset_ingest", "Import a local file into the video asset repository.", {
     file_path: { type: "string" },
     kind: { type: "string", enum: ["raw", "working"] },
-    title: { type: "string" },
-    description: { type: "string" },
-    tags: { type: "array", items: { type: "string" } },
+    title: { type: "string", minLength: 1, maxLength: 512 },
+    description: { type: "string", maxLength: 65536 },
+    tags: { type: "array", maxItems: 64, items: { type: "string", maxLength: 128 } },
     source: {
       type: "object",
       additionalProperties: false,
@@ -452,12 +455,21 @@ function registerTools(api) {
 
   api.registerTool(tool("video_asset_search", "Search video assets by text and basic filters.", {
     query: { type: "string" },
-    limit: { type: "number" }
+    limit: { type: "integer", minimum: 1, maximum: 100 },
+    offset: { type: "integer", minimum: 0, maximum: 100000 }
   }, (args) => service.searchAssets(args)));
 
   api.registerTool(tool("video_asset_get", "Get an asset with versions and branches.", {
     asset_id: { type: "string" }
   }, (args) => service.getAsset(args)));
+
+  api.registerTool(tool("video_asset_update_metadata", "Update asset title, description, and tags without changing media versions.", {
+    asset_id: { type: "string" },
+    title: { type: "string", minLength: 1, maxLength: 512 },
+    description: { type: "string", maxLength: 65536 },
+    tags: { type: "array", maxItems: 64, items: { type: "string", maxLength: 128 } },
+    notes: { type: "string" }
+  }, (args) => service.updateAssetMetadata(args), ["asset_id"]));
 
   api.registerTool(tool("video_asset_update_rights", "Update asset license/risk status and append source rights evidence.", {
     asset_id: { type: "string" },
@@ -590,7 +602,8 @@ function registerTools(api) {
     query: { type: "string" },
     entity_type: { type: "string" },
     project_id: { type: "string" },
-    limit: { type: "number" }
+    limit: { type: "integer", minimum: 1, maximum: 100 },
+    offset: { type: "integer", minimum: 0, maximum: 100000 }
   }, (args) => service.searchEntities(args)));
 
   api.registerTool(tool("video_entity_link_asset", "Link an asset or asset version to a production entity.", {
@@ -654,7 +667,7 @@ function registerTools(api) {
     pin_mode: { type: "string", enum: ["pinned", "follow_latest", "candidate"] },
     required: { type: "boolean" },
     notes: { type: "string" }
-  }, (args) => service.addProjectRef(args)));
+  }, (args) => service.addProjectRef(args), ["project_id", "asset_id"]));
 
   api.registerTool(tool("video_project_update_asset_ref", "Update an existing project asset reference.", {
     reference_id: { type: "string" },
@@ -665,7 +678,7 @@ function registerTools(api) {
     pin_mode: { type: "string", enum: ["pinned", "follow_latest", "candidate"] },
     required: { type: "boolean" },
     notes: { type: "string" }
-  }, (args) => service.updateProjectRef(args)));
+  }, (args) => service.updateProjectRef(args), ["reference_id"]));
 
   api.registerTool(tool("video_project_remove_asset_ref", "Soft-remove a project asset reference.", {
     reference_id: { type: "string" }
@@ -694,7 +707,8 @@ function registerTools(api) {
   api.registerTool(tool("video_canvas_search", "Search project canvases.", {
     project_id: { type: "string" },
     query: { type: "string" },
-    limit: { type: "number" }
+    limit: { type: "integer", minimum: 1, maximum: 200 },
+    offset: { type: "integer", minimum: 0, maximum: 100000 }
   }, (args) => service.searchCanvases(args)));
 
   api.registerTool(tool("video_canvas_apply_production_template", "Apply a production pilot canvas template with stage sections, project refs, entities, and generation slots.", {
@@ -714,8 +728,15 @@ function registerTools(api) {
     canvas_id: { type: "string" },
     viewport: { type: "object", additionalProperties: true },
     document: { type: "object", additionalProperties: true },
+    document_mode: {
+      type: "string",
+      enum: ["merge", "replace"],
+      description: "文档写入模式。默认 merge；replace 必须同时传 confirm_document_replace=true。"
+    },
+    confirm_document_replace: { type: "boolean" },
+    expected_updated_at: { type: "string", description: "可选乐观锁；必须与画布当前 updated_at 完全一致。" },
     state: { type: "object", additionalProperties: true }
-  }, (args) => service.saveCanvasSnapshot(args)));
+  }, (args) => service.saveCanvasSnapshot(args), ["canvas_id"]));
 
   api.registerTool(tool("video_canvas_upsert_shape", "Create or update a canvas card/shape without modifying the underlying asset.", {
     canvas_id: { type: "string" },
@@ -742,14 +763,18 @@ function registerTools(api) {
     target_aspect_ratio: { type: "string" },
     duration_seconds: { type: "number" },
     replace_policy: { type: "string", enum: ["insert_beside", "replace_slot", "new_revision", "append_timeline"] },
-    required_refs: { type: "array", items: { type: "string" } },
+    required_refs: {
+      type: "array",
+      description: "生成前必须存在的输入槽 key，不是资产 ID 或画布卡片 ID。",
+      items: { type: "string", enum: ["main_reference", "character_reference", "scene_reference", "motion_reference", "style_reference", "video_clip", "audio", "subtitle", "project_config"] }
+    },
     status: { type: "string", enum: ["empty", "ready", "generating", "filled", "blocked"] },
     title: { type: "string" },
     x: { type: "number" },
     y: { type: "number" },
     width: { type: "number" },
     height: { type: "number" }
-  }, (args) => service.createGenerationSlot(args)));
+  }, (args) => service.createGenerationSlot(args), ["canvas_id"]));
 
   api.registerTool(tool("video_canvas_update_generation_slot", "Update a production generation slot target spec or workflow state.", {
     shape_id: { type: "string" },
@@ -760,14 +785,18 @@ function registerTools(api) {
     target_aspect_ratio: { type: "string" },
     duration_seconds: { type: "number" },
     replace_policy: { type: "string", enum: ["insert_beside", "replace_slot", "new_revision", "append_timeline"] },
-    required_refs: { type: "array", items: { type: "string" } },
+    required_refs: {
+      type: "array",
+      description: "生成前必须存在的输入槽 key，不是资产 ID 或画布卡片 ID。",
+      items: { type: "string", enum: ["main_reference", "character_reference", "scene_reference", "motion_reference", "style_reference", "video_clip", "audio", "subtitle", "project_config"] }
+    },
     status: { type: "string", enum: ["empty", "ready", "generating", "filled", "blocked"] },
     title: { type: "string" },
     x: { type: "number" },
     y: { type: "number" },
     width: { type: "number" },
     height: { type: "number" }
-  }, (args) => service.updateGenerationSlot(args)));
+  }, (args) => service.updateGenerationSlot(args), ["shape_id"]));
 
   api.registerTool(tool("video_canvas_delete_shape", "Remove a card from a canvas without deleting repository assets.", {
     shape_id: { type: "string" }
@@ -900,6 +929,7 @@ function registerTools(api) {
     classification: { type: "object", additionalProperties: true },
     project_ref: { type: "object", additionalProperties: true },
     writeback: { type: "object", additionalProperties: true },
+    idempotency_key: { type: "string", description: "可选幂等键；相同键复用既有生成写回。" },
     slot_status: { type: "string", enum: ["empty", "ready", "generating", "filled", "blocked"] }
   }, (args) => service.insertGeneratedAsset(args)));
 
@@ -918,6 +948,7 @@ function registerTools(api) {
     classification: { type: "object", additionalProperties: true },
     project_ref: { type: "object", additionalProperties: true },
     writeback: { type: "object", additionalProperties: true },
+    idempotency_key: { type: "string", description: "可选幂等键；相同键复用既有生成写回。" },
     slot_status: { type: "string", enum: ["empty", "ready", "generating", "filled", "blocked"] }
   }, (args) => service.fillGenerationSlot(args)));
 
@@ -1221,13 +1252,7 @@ function registerRpc(api) {
   const rpc = allRpc();
 
   for (const [name, definition] of Object.entries(rpc)) {
-    api.registerGatewayMethod(name, async ({ params, respond }) => {
-      try {
-        respond({ ok: true, result: await definition.handler(params ?? {}) });
-      } catch (error) {
-        respond({ ok: false, error: error instanceof Error ? error.message : String(error) });
-      }
-    }, { scope: definition.scope });
+    api.registerGatewayMethod(name, createGatewayRpcHandler(definition), { scope: definition.scope });
   }
 }
 
@@ -1235,6 +1260,7 @@ function allRpc() {
   return {
     "videoAssets.asset.search": read((params) => service.searchAssets(params)),
     "videoAssets.asset.get": read((params) => service.getAsset(params)),
+    "videoAssets.asset.updateMetadata": write((params) => service.updateAssetMetadata(params)),
     "videoAssets.asset.updateRights": write((params) => service.updateAssetRights(params)),
     "videoAssets.asset.create": write((params) => service.ingestAsset(params)),
     "videoAssets.asset.createVersion": write((params) => service.createVersion(params)),
@@ -1367,7 +1393,7 @@ function write(handler) {
   return { scope: "operator.write", handler };
 }
 
-function tool(name, description, properties, handler) {
+function tool(name, description, properties, handler, required = []) {
   const localizedDescription = localizedToolDescription(name, description);
   return {
     name,
@@ -1375,7 +1401,8 @@ function tool(name, description, properties, handler) {
     parameters: {
       type: "object",
       additionalProperties: false,
-      properties
+      properties,
+      ...(required.length > 0 ? { required } : {})
     },
     async execute(_toolCallId, args) {
       try {

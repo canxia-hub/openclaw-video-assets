@@ -1,9 +1,13 @@
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate, useParams } from "react-router-dom";
 import { rpc, type ProjectSummary } from "../lib/rpc";
 import { useInspector } from "../lib/inspector";
 import { Badge, EmptyState, fmtTime } from "../components/ui";
 
 export default function ProjectsPage() {
+  const { projectId } = useParams<{ projectId?: string }>();
+  const navigate = useNavigate();
   const selection = useInspector((s) => s.selection);
   const select = useInspector((s) => s.select);
 
@@ -13,6 +17,14 @@ export default function ProjectsPage() {
   });
 
   const items = Array.isArray(q.data) ? q.data : [];
+
+  useEffect(() => {
+    if (projectId && (selection?.kind !== "project" || selection.id !== projectId)) {
+      select({ kind: "project", id: projectId });
+    }
+  }, [projectId, select, selection]);
+
+  const routeProjectMissing = Boolean(projectId && q.data && !items.some((item) => item.project_id === projectId));
 
   return (
     <div className="p-6">
@@ -25,6 +37,11 @@ export default function ProjectsPage() {
           {q.error instanceof Error ? q.error.message : "加载失败"}
         </div>
       )}
+      {routeProjectMissing && (
+        <div className="mb-4 rounded-md border border-danger/40 bg-danger/10 p-3 text-sm text-danger" data-testid="project-route-missing">
+          未找到路由指定项目：<span className="font-mono text-xs">{projectId}</span>。右侧检查器保留具体错误，不会静默切换到其他项目。
+        </div>
+      )}
 
       <div className="grid max-w-4xl grid-cols-1 gap-4 lg:grid-cols-2">
         {items.map((p) => {
@@ -32,7 +49,11 @@ export default function ProjectsPage() {
           return (
             <button
               key={p.project_id}
-              onClick={() => select({ kind: "project", id: p.project_id })}
+              data-project-id={p.project_id}
+              onClick={() => {
+                select({ kind: "project", id: p.project_id });
+                navigate(`/projects/${p.project_id}`);
+              }}
               className={`rounded-lg border p-4 text-left transition-colors ${
                 active
                   ? "border-accent/50 bg-accent-dim"

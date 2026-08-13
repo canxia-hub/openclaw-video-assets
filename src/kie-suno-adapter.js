@@ -29,7 +29,8 @@ const SUPPORTED_ENDPOINTS = new Set([
 
 export const KIE_SUNO_GUIDE_SOURCE = Object.freeze({
   title: "KIE Suno API 调用、音乐创作、回调轮询与音频资产治理",
-  source: "openclaw-video-assets public adapter contract",
+  skill: "workspace-qian-tong/skills/kie-suno-api",
+  proposal: "skill-workshop/proposals/kie-suno-api-20260720-b424035b27",
   docs_checked_at: "2026-07-20",
   docs: [
     "https://docs.kie.ai/",

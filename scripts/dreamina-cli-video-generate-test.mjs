@@ -46,6 +46,9 @@ try {
     risk_level: "low",
     source: { source_type: "internal_fixture", license_hint: "test fixture" }
   });
+  svc.classifyAsset({ asset_id: asset.asset_id, asset_version_id: asset.default_version_id, domain: "reference", type: "main_reference", confidence: "confirmed", source: "agent" });
+  svc.classifyAsset({ asset_id: videoAsset.asset_id, asset_version_id: videoAsset.default_version_id, domain: "reference", type: "motion_reference", confidence: "confirmed", source: "agent" });
+  svc.classifyAsset({ asset_id: audioAsset.asset_id, asset_version_id: audioAsset.default_version_id, domain: "reference", type: "audio_reference", confidence: "confirmed", source: "agent" });
   const ref = svc.addProjectRef({
     project_id: project.project_id,
     asset_id: asset.asset_id,

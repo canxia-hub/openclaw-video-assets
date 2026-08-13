@@ -75,6 +75,15 @@ export interface ProjectSummary {
   updated_at?: string;
 }
 
+export interface ProjectIssue {
+  level: "error" | "warning" | "info" | string;
+  code: string;
+  message: string;
+  reference_id?: string | null;
+  asset_id?: string | null;
+  asset_version_id?: string | null;
+}
+
 export interface AssetSummary {
   asset_id: string;
   title?: string;
@@ -115,6 +124,43 @@ export interface ProjectRef {
   asset?: AssetSummary;
 }
 
+export interface ProjectDetail extends ProjectSummary {
+  refs?: ProjectRef[];
+  report?: { issues?: ProjectIssue[]; warnings?: ProjectIssue[] };
+  continuity?: {
+    issues?: ProjectIssue[];
+    errors?: ProjectIssue[];
+    warnings?: ProjectIssue[];
+  };
+}
+
+export interface AnnotationSummaryDetail {
+  annotation_id: string;
+  annotation_type?: string;
+  title?: string;
+  body?: string;
+  status?: string;
+  visibility?: string;
+  created_at?: string;
+  structured?: {
+    severity?: string;
+    requested_change?: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface CanvasSubjectContext {
+  subject_type?: string;
+  subject_id?: string | null;
+  asset?: AssetSummary;
+  ref?: ProjectRef;
+  annotation_summary?: {
+    active_count?: number;
+    details?: AnnotationSummaryDetail[];
+  };
+  [key: string]: unknown;
+}
+
 export interface CanvasShape {
   shape_id: string;
   canvas_id: string;
@@ -129,6 +175,8 @@ export interface CanvasShape {
   rotation?: number;
   z_index?: number;
   props?: Record<string, unknown>;
+  props_json?: string;
+  subject_context?: CanvasSubjectContext;
 }
 
 export interface CanvasEdge {
@@ -148,9 +196,45 @@ export interface CanvasDocument {
   status?: string;
   shape_count?: number;
   edge_count?: number;
-  viewport?: { x: number; y: number; zoom: number };
+  viewport?: { x: number; y: number; zoom: number; width?: number; height?: number };
   shapes: CanvasShape[];
   edges: CanvasEdge[];
+}
+
+export interface CanvasSelectionState {
+  canvas_id: string;
+  selected_shape_ids: string[];
+  primary_shape_id?: string | null;
+  selected_shapes: CanvasShape[];
+  source?: string | null;
+  updated_at?: string | null;
+}
+
+export interface CanvasViewState {
+  version?: number;
+  canvas_id: string;
+  view_state?: {
+    viewport?: { x: number; y: number; zoom: number; width?: number; height?: number };
+    source?: string | null;
+    updated_at?: string | null;
+  } | null;
+  fallback_viewport?: { x: number; y: number; zoom: number; width?: number; height?: number };
+}
+
+export interface CanvasIssue extends ProjectIssue {
+  shape_id?: string | null;
+  subject_type?: string | null;
+  subject_id?: string | null;
+  edge_id?: string | null;
+}
+
+export interface CanvasLint {
+  canvas_id: string;
+  issue_count: number;
+  issues: CanvasIssue[];
+  errors: CanvasIssue[];
+  warnings: CanvasIssue[];
+  infos: CanvasIssue[];
 }
 
 export interface AuditEvent {

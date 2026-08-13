@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".tif", ".tiff", ".bmp", ".psd", ".psb"]);
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".tif", ".tiff", ".bmp", ".psd", ".psb", ".svg"]);
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"]);
 const AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".aac", ".m4a", ".flac", ".ogg", ".opus"]);
 const PACKAGE_EXTENSIONS = new Set([".zip", ".7z", ".rar"]);
@@ -18,6 +18,7 @@ const MIME_BY_EXTENSION = new Map([
   [".bmp", "image/bmp"],
   [".psd", "image/vnd.adobe.photoshop"],
   [".psb", "image/vnd.adobe.photoshop"],
+  [".svg", "image/svg+xml"],
   [".mp4", "video/mp4"],
   [".mov", "video/quicktime"],
   [".webm", "video/webm"],
@@ -49,7 +50,7 @@ export function probeMedia(filePath, options = {}) {
   const base = { extension, mime_type, container };
 
   if (IMAGE_EXTENSIONS.has(extension)) {
-    return { ...base, media_type: "image", format_family: "raster", ...probeImage(filePath, extension) };
+    return { ...base, media_type: "image", format_family: extension === ".svg" ? "vector" : "raster", ...probeImage(filePath, extension) };
   }
   if (VIDEO_EXTENSIONS.has(extension)) {
     return { ...base, media_type: "video", format_family: "video", ...probeVideo(filePath, extension) };
@@ -69,6 +70,7 @@ export function probeMedia(filePath, options = {}) {
 function probeImage(filePath, extension) {
   try {
     const buffer = fs.readFileSync(filePath);
+    if (extension === ".svg") return svgDimensions(buffer);
     if (extension === ".png") return pngDimensions(buffer);
     if (extension === ".jpg" || extension === ".jpeg") return jpegDimensions(buffer);
     if (extension === ".webp") return webpDimensions(buffer);
@@ -76,6 +78,27 @@ function probeImage(filePath, extension) {
     return {};
   }
   return {};
+}
+
+function svgDimensions(buffer) {
+  const source = buffer.subarray(0, Math.min(buffer.length, 128 * 1024)).toString("utf8");
+  const root = source.match(/<svg\b[^>]*>/i)?.[0] ?? "";
+  if (!root) return { codec: "svg" };
+  const width = numericSvgAttribute(root, "width");
+  const height = numericSvgAttribute(root, "height");
+  const viewBox = root.match(/\bviewBox\s*=\s*["']\s*([+-]?(?:\d+\.?\d*|\.\d+))[,\s]+([+-]?(?:\d+\.?\d*|\.\d+))[,\s]+([+-]?(?:\d+\.?\d*|\.\d+))[,\s]+([+-]?(?:\d+\.?\d*|\.\d+))\s*["']/i);
+  return clean({
+    width: width ?? (viewBox ? Math.round(Number(viewBox[3])) : undefined),
+    height: height ?? (viewBox ? Math.round(Number(viewBox[4])) : undefined),
+    codec: "svg"
+  });
+}
+
+function numericSvgAttribute(root, name) {
+  const match = root.match(new RegExp(`\\b${name}\\s*=\\s*["']\\s*([+-]?(?:\\d+\\.?\\d*|\\.\\d+))(?:px)?\\s*["']`, "i"));
+  if (!match) return undefined;
+  const value = Number(match[1]);
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
 }
 
 function probeVideo(filePath, extension) {

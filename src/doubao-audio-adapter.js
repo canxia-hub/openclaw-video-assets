@@ -12,8 +12,10 @@ const SUPPORTED_OUTPUT_FORMATS = new Set(["wav", "mp3", "pcm", "ogg_opus"]);
 const SUPPORTED_SAMPLE_RATES = new Set([8000, 16000, 24000, 32000, 44100, 48000]);
 
 export const DOUBAO_AUDIO_GUIDE_SOURCE = Object.freeze({
-  title: "豆包音频生成 1.0 请求规范与声音导演提示词约束",
-  source: "openclaw-video-assets public adapter contract",
+  title: "豆包音频生成 1.0 中文声音导演稿方法库",
+  skill: "doubao-seed-audio-prompt-engineering",
+  wiki: "wiki/doubao-audio-1-0",
+  plan: "projects/active/openclaw-video-asset-plugin/100-doubao-audio-plugin-integration-plan-2026-07-20.md",
   official_http_doc: "https://docs.volcengine.com/docs/6561/2550782?lang=zh"
 });
 

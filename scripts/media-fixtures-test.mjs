@@ -21,6 +21,15 @@ const fixtures = [
     bytes: Buffer.from("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AA/vuUAAA=", "base64")
   },
   {
+    name: "fixture.svg",
+    media_type: "image",
+    format_family: "vector",
+    mime_type: "image/svg+xml",
+    width: 640,
+    height: 360,
+    bytes: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"><rect width="640" height="360"/></svg>', "utf8")
+  },
+  {
     name: "fixture.mp4",
     media_type: "video",
     mime_type: "video/mp4",
@@ -64,7 +73,10 @@ try {
   for (const fixture of fixtures) {
     const ingested = await svc.ingestAsset({ file_path: fixture.path, title: fixture.name, kind: "raw" });
     assert.equal(ingested.media_type, fixture.media_type);
+    if (fixture.format_family) assert.equal(ingested.format_family, fixture.format_family);
     assert.equal(ingested.versions[0].mime_type, fixture.mime_type);
+    if (fixture.width) assert.equal(ingested.versions[0].width, fixture.width);
+    if (fixture.height) assert.equal(ingested.versions[0].height, fixture.height);
 
     const updated = await svc.createVersion({
       asset_id: ingested.asset_id,

@@ -25,6 +25,10 @@ const DEFAULT_ACTOR = "agent:unknown";
 const VIDEO_ASSETS_WIDGET_URI = "ui://widget/video-assets/canvas.html";
 const VIDEO_ASSETS_WORKBENCH_URL = "/__openclaw__/video-assets/workbench/";
 const MAX_STAGING_UPLOAD_BYTES = 100 * 1024 * 1024;
+const ASSET_TITLE_MAX_LENGTH = 512;
+const ASSET_DESCRIPTION_MAX_LENGTH = 65536;
+const ASSET_TAG_MAX_ITEMS = 64;
+const ASSET_TAG_MAX_LENGTH = 128;
 const DOMAINS = new Set(["character", "scene", "costume", "prop", "audio", "reference", "prompt", "document", "delivery", "other"]);
 const KEY_DOMAINS = new Set(["character", "scene", "costume", "prop"]);
 const DERIVATIVE_TYPES = new Set(["thumbnail", "proxy", "transcode", "audio_proxy", "subtitle", "waveform", "contact_sheet", "metadata", "other"]);
@@ -119,6 +123,9 @@ export class VideoAssetService {
   async ingestAsset(input) {
     this.requireDb();
     if (!input?.file_path) throw new Error("file_path is required");
+    const title = boundedRequiredString(input.title ?? path.basename(String(input.file_path)), "title", ASSET_TITLE_MAX_LENGTH);
+    const description = boundedNullableString(input.description, "description", ASSET_DESCRIPTION_MAX_LENGTH);
+    const tags = normalizeStringArray(input.tags ?? [], "tags", { maxItems: ASSET_TAG_MAX_ITEMS, maxLength: ASSET_TAG_MAX_LENGTH });
     const kind = input.kind === "working" ? "working" : "raw";
     const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
     const now = new Date().toISOString();
@@ -127,16 +134,14 @@ export class VideoAssetService {
     const asset_id = id("asset");
     const asset_version_id = id("ver");
     const branch_id = id("branch");
-    const title = input.title || stored.file_name;
-    const tags = JSON.stringify(input.tags ?? []);
 
     this.db.prepare(`INSERT INTO assets (asset_id, kind, media_type, format_family, title, description, lifecycle, default_version_id, root_asset_id, tags_json, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`)
-      .run(asset_id, kind, probe.media_type, probe.format_family, title, input.description ?? null, asset_version_id, asset_id, tags, actor.actor_id, now, now);
+      .run(asset_id, kind, probe.media_type, probe.format_family, title, description, asset_version_id, asset_id, JSON.stringify(tags), actor.actor_id, now, now);
 
     this.db.prepare(`INSERT INTO asset_versions (asset_version_id, asset_id, branch_id, version_label, object_id, file_name, extension, mime_type, container, size_bytes, sha256, width, height, duration_ms, frame_rate, sample_rate, channels, codec, change_summary, parent_version_id, created_by, created_at)
       VALUES (?, ?, ?, 'v001', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
-      .run(asset_version_id, asset_id, branch_id, stored.object_id, stored.file_name, probe.extension, probe.mime_type, probe.container, stored.size_bytes, stored.sha256, probe.width ?? null, probe.height ?? null, probe.duration_ms ?? null, probe.frame_rate ?? null, probe.sample_rate ?? null, probe.channels ?? null, probe.codec ?? null, input.change_summary ?? "Initial ingest", actor.actor_id, now);
+      .run(asset_version_id, asset_id, branch_id, stored.object_id, stored.file_name, probe.extension, probe.mime_type, probe.container, stored.size_bytes, stored.sha256, probe.width ?? null, probe.height ?? null, probe.duration_ms ?? null, probe.frame_rate ?? null, probe.sample_rate ?? null, probe.channels ?? null, probe.codec ?? null, input.change_summary ?? "初次入库", actor.actor_id, now);
 
     this.db.prepare(`INSERT INTO asset_branches (branch_id, asset_id, name, description, base_version_id, head_version_id, created_by, created_at, updated_at)
       VALUES (?, ?, 'main', ?, ?, ?, ?, ?, ?)`)
@@ -148,7 +153,7 @@ export class VideoAssetService {
         .run(id("source"), asset_id, input.source.source_type, input.source.url ?? null, now, input.source.notes ?? null);
     }
 
-    this.commit({ scope: "asset", target_id: asset_id, action: "asset.create", message: `Ingested ${title}`, actor_id: actor.actor_id, changes: { asset_version_id, sha256: stored.sha256 } });
+    this.commit({ scope: "asset", target_id: asset_id, action: "asset.create", message: `已入库素材：${title}`, actor_id: actor.actor_id, changes: { asset_version_id, sha256: stored.sha256 } });
     return this.getAsset({ asset_id });
   }
 
@@ -206,7 +211,7 @@ export class VideoAssetService {
     this.db.prepare(`INSERT INTO asset_branches (branch_id, asset_id, name, description, base_version_id, head_version_id, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(branch_id, input.asset_id, input.name, input.description ?? null, input.base_version_id, input.base_version_id, actor.actor_id, now, now);
-    this.commit({ scope: "asset", target_id: input.asset_id, action: "asset.branch.create", message: `Created branch ${input.name}`, actor_id: actor.actor_id, changes: { branch_id, base_version_id: input.base_version_id } });
+    this.commit({ scope: "asset", target_id: input.asset_id, action: "asset.branch.create", message: `已创建素材分支：${input.name}`, actor_id: actor.actor_id, changes: { branch_id, base_version_id: input.base_version_id } });
     return { branch_id, asset_id: input.asset_id, name: input.name, base_version_id: input.base_version_id, head_version_id: input.base_version_id };
   }
 
@@ -230,14 +235,14 @@ export class VideoAssetService {
       .run(asset_id, sourceAsset.kind === "raw" ? "working" : sourceAsset.kind, sourceAsset.media_type, sourceAsset.format_family, title, input.reason ?? null, asset_version_id, sourceAsset.root_asset_id ?? sourceAsset.asset_id, sourceAsset.tags_json, sourceAsset.risk_level, sourceAsset.license_status, actor.actor_id, now, now);
     this.db.prepare(`INSERT INTO asset_versions (asset_version_id, asset_id, branch_id, version_label, object_id, file_name, extension, mime_type, container, size_bytes, sha256, width, height, duration_ms, frame_rate, sample_rate, channels, codec, change_summary, parent_version_id, source_version_ids_json, created_by, created_at)
       VALUES (?, ?, ?, 'v001', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(asset_version_id, asset_id, branch_id, sourceVersion.object_id, sourceVersion.file_name, sourceVersion.extension, sourceVersion.mime_type, sourceVersion.container, sourceVersion.size_bytes, sourceVersion.sha256, sourceVersion.width ?? null, sourceVersion.height ?? null, sourceVersion.duration_ms ?? null, sourceVersion.frame_rate ?? null, sourceVersion.sample_rate ?? null, sourceVersion.channels ?? null, sourceVersion.codec ?? null, input.reason ?? `Saved ${input.copy_type}`, input.source_version_id, JSON.stringify([input.source_version_id]), actor.actor_id, now);
+      .run(asset_version_id, asset_id, branch_id, sourceVersion.object_id, sourceVersion.file_name, sourceVersion.extension, sourceVersion.mime_type, sourceVersion.container, sourceVersion.size_bytes, sourceVersion.sha256, sourceVersion.width ?? null, sourceVersion.height ?? null, sourceVersion.duration_ms ?? null, sourceVersion.frame_rate ?? null, sourceVersion.sample_rate ?? null, sourceVersion.channels ?? null, sourceVersion.codec ?? null, input.reason ?? `已保存素材副本：${input.copy_type}`, input.source_version_id, JSON.stringify([input.source_version_id]), actor.actor_id, now);
     this.db.prepare(`INSERT INTO asset_branches (branch_id, asset_id, name, description, base_version_id, head_version_id, created_by, created_at, updated_at)
       VALUES (?, ?, 'main', ?, ?, ?, ?, ?, ?)`)
       .run(branch_id, asset_id, input.copy_type, asset_version_id, asset_version_id, actor.actor_id, now, now);
     this.db.prepare(`INSERT INTO asset_relations (relation_id, relation_type, source_asset_id, source_version_id, target_asset_id, target_version_id, copy_type, reason, created_by, created_at)
       VALUES (?, 'copied_from', ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(relation_id, input.source_asset_id, input.source_version_id, asset_id, asset_version_id, input.copy_type, input.reason ?? null, actor.actor_id, now);
-    this.commit({ scope: "asset", target_id: asset_id, action: "asset.copy.create", message: input.reason ?? `Saved ${input.copy_type}`, actor_id: actor.actor_id, changes: { relation_id, source_asset_id: input.source_asset_id, source_version_id: input.source_version_id } });
+    this.commit({ scope: "asset", target_id: asset_id, action: "asset.copy.create", message: input.reason ?? `已保存素材副本：${input.copy_type}`, actor_id: actor.actor_id, changes: { relation_id, source_asset_id: input.source_asset_id, source_version_id: input.source_version_id } });
     return { asset_id, asset_version_id, relation_id };
   }
 
@@ -257,16 +262,23 @@ export class VideoAssetService {
     this.db.prepare(`INSERT INTO asset_relations (relation_id, relation_type, source_asset_id, source_version_id, target_asset_id, target_version_id, copy_type, reason, created_by, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(relation_id, input.relation_type, input.source_asset_id, input.source_version_id, input.target_asset_id, input.target_version_id ?? null, input.copy_type ?? null, input.reason ?? null, actor.actor_id, now);
-    this.commit({ scope: "asset", target_id: input.target_asset_id, action: "asset.relation.create", message: input.reason ?? `Related ${input.source_asset_id} to ${input.target_asset_id}`, actor_id: actor.actor_id, changes: { relation_id, relation_type: input.relation_type, source_asset_id: input.source_asset_id, source_version_id: input.source_version_id, target_version_id: input.target_version_id ?? null } });
+    this.commit({ scope: "asset", target_id: input.target_asset_id, action: "asset.relation.create", message: input.reason ?? `已建立素材关系：${input.source_asset_id} → ${input.target_asset_id}`, actor_id: actor.actor_id, changes: { relation_id, relation_type: input.relation_type, source_asset_id: input.source_asset_id, source_version_id: input.source_version_id, target_version_id: input.target_version_id ?? null } });
     return { relation_id, relation_type: input.relation_type, source_asset_id: input.source_asset_id, source_version_id: input.source_version_id, target_asset_id: input.target_asset_id, target_version_id: input.target_version_id ?? null, copy_type: input.copy_type ?? null, reason: input.reason ?? null, created_by: actor.actor_id, created_at: now };
   }
 
   searchAssets(input = {}) {
     this.requireDb();
-    const limit = Math.min(Number(input.limit ?? 20), 100);
-    const rows = this.db.prepare("SELECT * FROM assets WHERE lifecycle != 'soft_deleted' ORDER BY updated_at DESC LIMIT ?").all(limit);
-    const query = String(input.query ?? "").toLowerCase();
-    return rows.filter((row) => !query || row.title.toLowerCase().includes(query) || (row.description ?? "").toLowerCase().includes(query)).map(assetFromRow);
+    const limit = clampInteger(input.limit ?? 20, 1, 100, "limit");
+    const offset = clampInteger(input.offset ?? 0, 0, 100000, "offset");
+    const query = String(input.query ?? "").trim().toLowerCase();
+    const where = ["lifecycle != 'soft_deleted'"];
+    const params = [];
+    if (query) {
+      where.push("(instr(lower(title), ?) > 0 OR instr(lower(COALESCE(description, '')), ?) > 0 OR instr(lower(asset_id), ?) > 0)");
+      params.push(query, query, query);
+    }
+    const rows = this.db.prepare(`SELECT * FROM assets WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, asset_id DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
+    return rows.map(assetFromRow);
   }
 
   getAsset(input) {
@@ -276,6 +288,51 @@ export class VideoAssetService {
     const versions = this.db.prepare("SELECT * FROM asset_versions WHERE asset_id = ? ORDER BY created_at ASC").all(input.asset_id).map((version) => versionFromRow(this.lazyReprobeVersion(version)));
     const branches = this.db.prepare("SELECT * FROM asset_branches WHERE asset_id = ? ORDER BY created_at ASC").all(input.asset_id);
     return { ...assetFromRow(row), versions, branches, sources: this.listAssetSources(input.asset_id) };
+  }
+
+  updateAssetMetadata(input = {}) {
+    this.requireDb();
+    if (!input.asset_id) throw new Error("asset_id is required");
+    const asset = this.requireAsset(input.asset_id);
+    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const now = new Date().toISOString();
+    const updates = {};
+
+    if (input.title !== undefined) {
+      updates.title = boundedRequiredString(input.title, "title", ASSET_TITLE_MAX_LENGTH);
+    }
+    if (input.description !== undefined) {
+      updates.description = boundedNullableString(input.description, "description", ASSET_DESCRIPTION_MAX_LENGTH);
+    }
+    if (input.tags !== undefined) {
+      updates.tags_json = JSON.stringify(normalizeStringArray(input.tags, "tags", { maxItems: ASSET_TAG_MAX_ITEMS, maxLength: ASSET_TAG_MAX_LENGTH }));
+    }
+    if (Object.keys(updates).length === 0) throw new Error("title, description, or tags is required");
+
+    const before = {
+      title: asset.title,
+      description: asset.description,
+      tags: JSON.parse(asset.tags_json || "[]")
+    };
+    const fields = Object.keys(updates);
+    const setSql = fields.map((field) => `${field} = ?`).join(", ");
+    this.db.prepare(`UPDATE assets SET ${setSql}, updated_at = ? WHERE asset_id = ?`).run(...fields.map((field) => updates[field]), now, input.asset_id);
+
+    const updated = this.getAssetRow(input.asset_id);
+    const after = {
+      title: updated.title,
+      description: updated.description,
+      tags: JSON.parse(updated.tags_json || "[]")
+    };
+    this.commit({
+      scope: "asset",
+      target_id: input.asset_id,
+      action: "asset.metadata.update",
+      message: input.notes ?? `已更新素材元数据：${asset.title}`,
+      actor_id: actor.actor_id,
+      changes: { before, after }
+    });
+    return { asset: assetFromRow(updated), updated_fields: fields.map((field) => field === "tags_json" ? "tags" : field) };
   }
 
   updateAssetRights(input = {}) {
@@ -317,7 +374,7 @@ export class VideoAssetService {
       scope: "asset",
       target_id: input.asset_id,
       action: "asset.rights.update",
-      message: input.notes ?? `Updated asset rights for ${asset.title}`,
+      message: input.notes ?? `已更新素材授权信息：${asset.title}`,
       actor_id: actor.actor_id,
       changes: { before: { license_status: asset.license_status, risk_level: asset.risk_level }, after: updates, source_id: source?.source_id ?? null }
     });
@@ -353,7 +410,7 @@ export class VideoAssetService {
     this.db.prepare(`INSERT INTO derived_files (derived_file_id, asset_id, asset_version_id, derivative_type, profile, object_id, file_name, extension, mime_type, container, size_bytes, sha256, width, height, duration_ms, frame_rate, sample_rate, channels, codec, status, metadata_json, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
       .run(derived_file_id, input.asset_id, input.asset_version_id, derivative_type, input.profile ?? null, stored.object_id, stored.file_name, probe.extension, probe.mime_type, probe.container, stored.size_bytes, stored.sha256, probe.width ?? null, probe.height ?? null, probe.duration_ms ?? null, probe.frame_rate ?? null, probe.sample_rate ?? null, probe.channels ?? null, probe.codec ?? null, JSON.stringify(input.metadata ?? {}), actor.actor_id, now, now);
-    this.commit({ scope: "asset", target_id: input.asset_id, action: "asset.derived.register", message: `Registered ${derivative_type} derived file`, actor_id: actor.actor_id, changes: { derived_file_id, asset_version_id: input.asset_version_id, derivative_type, profile: input.profile ?? null } });
+    this.commit({ scope: "asset", target_id: input.asset_id, action: "asset.derived.register", message: `已登记衍生文件：${derivative_type}`, actor_id: actor.actor_id, changes: { derived_file_id, asset_version_id: input.asset_version_id, derivative_type, profile: input.profile ?? null } });
     return this.getDerivedFile(derived_file_id);
   }
 
@@ -396,7 +453,7 @@ export class VideoAssetService {
       scope: "asset",
       target_id: version.asset_id,
       action: "asset.derived.generate",
-      message: `Generated ${generation.derivative_type} derived file`,
+      message: `已生成衍生文件：${generation.derivative_type}`,
       actor_id: input.actor_id ?? DEFAULT_ACTOR,
       changes: {
         derived_file_id: derived.derived_file_id,
@@ -552,7 +609,7 @@ export class VideoAssetService {
     this.db.prepare(`INSERT INTO projects (project_id, title, status, description, target_platforms_json, aspect_ratio, resolution, fps, owner_actor_id, created_by, created_at, updated_at)
       VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(project_id, input.title, input.description ?? null, JSON.stringify(input.target_platforms ?? []), input.aspect_ratio ?? null, input.resolution ?? null, input.fps ?? null, input.owner_actor_id ?? null, actor.actor_id, now, now);
-    this.commit({ scope: "project", target_id: project_id, action: "project.create", message: `Created project ${input.title}`, actor_id: actor.actor_id, changes: {} });
+    this.commit({ scope: "project", target_id: project_id, action: "project.create", message: `已创建项目：${input.title}`, actor_id: actor.actor_id, changes: {} });
     return this.getProject(project_id);
   }
 
@@ -572,7 +629,7 @@ export class VideoAssetService {
       scope: "project",
       target_id: input.project_id,
       action: "project.spec.update",
-      message: `Updated project output spec ${input.project_id}`,
+      message: `已更新项目输出规格：${input.project_id}`,
       actor_id: actor.actor_id,
       changes: {
         before: pickProjectSpec(existing),
@@ -598,8 +655,8 @@ export class VideoAssetService {
     this.db.prepare(`INSERT INTO project_references (reference_id, project_id, asset_id, asset_version_id, role, usage_scope, pin_mode, required, notes, status, added_by, added_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`)
       .run(reference_id, input.project_id, input.asset_id, asset_version_id, input.role ?? "other", input.usage_scope ?? null, pin_mode, input.required === false ? 0 : 1, input.notes ?? null, actor.actor_id, now, now);
-    this.commit({ scope: "project", target_id: input.project_id, action: "project.ref.add", message: `Added asset ref ${reference_id}`, actor_id: actor.actor_id, changes: { reference_id, asset_version_id } });
-    return { reference_id, project_id: input.project_id, asset_id: input.asset_id, asset_version_id };
+    this.commit({ scope: "project", target_id: input.project_id, action: "project.ref.add", message: `已添加项目素材引用：${reference_id}`, actor_id: actor.actor_id, changes: { reference_id, asset_version_id } });
+    return this.requireProjectRef(reference_id);
   }
 
   updateProjectRef(input) {
@@ -618,7 +675,7 @@ export class VideoAssetService {
     const now = new Date().toISOString();
     this.db.prepare(`UPDATE project_references SET asset_id = ?, asset_version_id = ?, role = ?, usage_scope = ?, pin_mode = ?, required = ?, notes = ?, updated_at = ? WHERE reference_id = ?`)
       .run(asset_id, asset_version_id, input.role ?? existing.role, input.usage_scope === undefined ? existing.usage_scope : input.usage_scope, pin_mode, input.required === undefined ? existing.required : (input.required === false ? 0 : 1), input.notes === undefined ? existing.notes : input.notes, now, input.reference_id);
-    this.commit({ scope: "project", target_id: existing.project_id, action: "project.ref.update", message: `Updated asset ref ${input.reference_id}`, actor_id: actor.actor_id, changes: { reference_id: input.reference_id, asset_id, asset_version_id, pin_mode } });
+    this.commit({ scope: "project", target_id: existing.project_id, action: "project.ref.update", message: `已更新项目素材引用：${input.reference_id}`, actor_id: actor.actor_id, changes: { reference_id: input.reference_id, asset_id, asset_version_id, pin_mode } });
     return this.requireProjectRef(input.reference_id);
   }
 
@@ -631,7 +688,7 @@ export class VideoAssetService {
     const now = new Date().toISOString();
     this.db.prepare("UPDATE project_references SET status = 'removed', removed_at = ?, removed_by = ?, updated_at = ? WHERE reference_id = ?")
       .run(now, actor.actor_id, now, input.reference_id);
-    this.commit({ scope: "project", target_id: existing.project_id, action: "project.ref.remove", message: `Removed asset ref ${input.reference_id}`, actor_id: actor.actor_id, changes: { reference_id: input.reference_id } });
+    this.commit({ scope: "project", target_id: existing.project_id, action: "project.ref.remove", message: `已移除项目素材引用：${input.reference_id}`, actor_id: actor.actor_id, changes: { reference_id: input.reference_id } });
     return { reference_id: input.reference_id, status: "removed" };
   }
 
@@ -646,27 +703,27 @@ export class VideoAssetService {
     const refs = this.listProjectRefs(input);
     const issues = [];
     for (const ref of refs) {
-      if (ref.pin_mode === "follow_latest") pushIssue(issues, "warning", "FOLLOW_LATEST", ref, "Reference follows the latest asset version; pin a concrete asset_version_id before delivery.");
-      if (ref.pin_mode === "candidate") pushIssue(issues, "warning", "CANDIDATE_REF", ref, "Candidate references are not suitable for final delivery.");
+      if (ref.pin_mode === "follow_latest") pushIssue(issues, "warning", "FOLLOW_LATEST", ref, "项目引用正在跟随素材最新版本；正式交付前应固定具体 asset_version_id。");
+      if (ref.pin_mode === "candidate") pushIssue(issues, "warning", "CANDIDATE_REF", ref, "候选引用不适合直接用于最终交付。");
       const asset = this.getAssetRow(ref.asset_id);
       const version = this.getVersionRow(ref.asset_version_id);
       if (!asset) {
-        pushIssue(issues, ref.required ? "error" : "info", "MISSING_ASSET", ref, `Referenced asset is missing: ${ref.asset_id}`);
+        pushIssue(issues, ref.required ? "error" : "info", "MISSING_ASSET", ref, `引用的素材不存在：${ref.asset_id}`);
       }
       if (!version) {
-        pushIssue(issues, ref.required ? "error" : "info", "MISSING_VERSION", ref, `Referenced asset version is missing: ${ref.asset_version_id}`);
+        pushIssue(issues, ref.required ? "error" : "info", "MISSING_VERSION", ref, `引用的素材版本不存在：${ref.asset_version_id}`);
       }
       if (asset && version && version.asset_id !== ref.asset_id) {
-        pushIssue(issues, ref.required ? "error" : "info", "ASSET_VERSION_MISMATCH", ref, `Asset version ${ref.asset_version_id} belongs to ${version.asset_id}, not ${ref.asset_id}.`);
+        pushIssue(issues, ref.required ? "error" : "info", "ASSET_VERSION_MISMATCH", ref, `素材版本 ${ref.asset_version_id} 属于 ${version.asset_id}，与引用素材 ${ref.asset_id} 不一致。`);
       }
       if (version && !this.objectExists(version.object_id)) {
-        pushIssue(issues, ref.required ? "error" : "info", "MISSING_OBJECT_FILE", ref, `Object file is missing for asset version ${ref.asset_version_id}.`);
+        pushIssue(issues, ref.required ? "error" : "info", "MISSING_OBJECT_FILE", ref, `素材版本 ${ref.asset_version_id} 的对象文件缺失。`);
       }
       if (asset && asset.license_status !== "cleared") {
-        pushIssue(issues, "warning", "LICENSE_UNKNOWN", ref, `License status is ${asset.license_status ?? "unknown"}; clear it before formal delivery.`);
+        pushIssue(issues, "warning", "LICENSE_UNKNOWN", ref, `素材授权状态为 ${asset.license_status ?? "unknown"}；正式交付前必须完成清权。`);
       }
       if (!ref.required && issues.every((issue) => issue.reference_id !== ref.reference_id || issue.level !== "info")) {
-        pushIssue(issues, "info", "OPTIONAL_REF", ref, "Optional reference; issues on this ref are informational unless promoted by delivery policy.");
+        pushIssue(issues, "info", "OPTIONAL_REF", ref, "该引用为可选项；除非交付策略将其提升为必需项，否则相关问题仅作提示。" );
       }
     }
     return { project_id: input.project_id, refs, issues, warnings: issues.filter((issue) => issue.level === "warning") };
@@ -675,16 +732,20 @@ export class VideoAssetService {
   searchProjects(input = {}) {
     this.requireDb();
     const limit = clampInteger(input.limit ?? 50, 1, 200, "limit");
+    const offset = clampInteger(input.offset ?? 0, 0, 100000, "offset");
     const query = String(input.query ?? "").trim().toLowerCase();
-    const rows = this.db.prepare("SELECT * FROM projects ORDER BY updated_at DESC LIMIT ?").all(limit * 3);
-    return rows
-      .filter((row) => {
-        if (input.status && row.status !== input.status) return false;
-        if (!query) return true;
-        return row.title.toLowerCase().includes(query) || (row.description ?? "").toLowerCase().includes(query) || row.project_id.toLowerCase().includes(query);
-      })
-      .slice(0, limit)
-      .map((row) => this.projectSummary(row));
+    const where = [];
+    const params = [];
+    if (input.status) {
+      where.push("status = ?");
+      params.push(String(input.status));
+    }
+    if (query) {
+      where.push("(instr(lower(title), ?) > 0 OR instr(lower(COALESCE(description, '')), ?) > 0 OR instr(lower(project_id), ?) > 0)");
+      params.push(query, query, query);
+    }
+    const sql = `SELECT * FROM projects${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC, project_id DESC LIMIT ? OFFSET ?`;
+    return this.db.prepare(sql).all(...params, limit, offset).map((row) => this.projectSummary(row));
   }
 
   getProjectDetail(input) {
@@ -708,7 +769,7 @@ export class VideoAssetService {
     const document = input.document && typeof input.document === "object" ? input.document : {};
     this.db.prepare(`INSERT INTO canvases (canvas_id, project_id, title, status, viewport_json, document_json, created_by, created_at, updated_at)
       VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)`).run(canvas_id, input.project_id, title, JSON.stringify(viewport), JSON.stringify(document), actor.actor_id, now, now);
-    this.commit({ scope: "project", target_id: input.project_id, action: "canvas.create", message: `Created canvas ${title}`, actor_id: actor.actor_id, changes: { canvas_id } });
+    this.commit({ scope: "project", target_id: input.project_id, action: "canvas.create", message: `已创建画布：${title}`, actor_id: actor.actor_id, changes: { canvas_id } });
     return this.getCanvas({ canvas_id });
   }
 
@@ -782,6 +843,7 @@ export class VideoAssetService {
     const stageCounts = Object.fromEntries(PRODUCTION_CANVAS_STAGES.map((stage) => [stage.key, 0]));
     const refs = this.listProjectRefs({ project_id });
     refs.forEach((ref) => {
+      const asset = this.getAssetRow(ref.asset_id);
       const stageKey = this.productionStageForProjectRef(ref);
       const stage = PRODUCTION_CANVAS_STAGE_BY_KEY.get(stageKey) ?? PRODUCTION_CANVAS_STAGE_BY_KEY.get("references");
       const slotIndex = stageCounts[stage.key]++;
@@ -791,7 +853,7 @@ export class VideoAssetService {
         shape_type: "reference_card",
         subject_type: "project_ref",
         subject_id: ref.reference_id,
-        title: ref.role || ref.reference_id,
+        title: asset?.title || ref.role || ref.reference_id,
         x: stage.x + 24,
         y: stage.y + 54 + slotIndex * 88,
         width: Math.min(292, stage.width - 48),
@@ -909,14 +971,20 @@ export class VideoAssetService {
   searchCanvases(input = {}) {
     this.requireDb();
     const limit = clampInteger(input.limit ?? 50, 1, 200, "limit");
+    const offset = clampInteger(input.offset ?? 0, 0, 100000, "offset");
     const query = String(input.query ?? "").trim().toLowerCase();
-    const rows = input.project_id
-      ? this.db.prepare("SELECT * FROM canvases WHERE project_id = ? AND status != 'archived' ORDER BY updated_at DESC LIMIT ?").all(input.project_id, limit * 3)
-      : this.db.prepare("SELECT * FROM canvases WHERE status != 'archived' ORDER BY updated_at DESC LIMIT ?").all(limit * 3);
-    return rows
-      .filter((row) => !query || row.title.toLowerCase().includes(query) || row.canvas_id.toLowerCase().includes(query) || row.project_id.toLowerCase().includes(query))
-      .slice(0, limit)
-      .map((row) => this.canvasSummary(row));
+    const where = ["status != 'archived'"];
+    const params = [];
+    if (input.project_id) {
+      where.push("project_id = ?");
+      params.push(String(input.project_id));
+    }
+    if (query) {
+      where.push("(instr(lower(title), ?) > 0 OR instr(lower(canvas_id), ?) > 0 OR instr(lower(project_id), ?) > 0)");
+      params.push(query, query, query);
+    }
+    const sql = `SELECT * FROM canvases WHERE ${where.join(" AND ")} ORDER BY updated_at DESC, canvas_id DESC LIMIT ? OFFSET ?`;
+    return this.db.prepare(sql).all(...params, limit, offset).map((row) => this.canvasSummary(row));
   }
 
   getCanvas(input = {}) {
@@ -937,6 +1005,12 @@ export class VideoAssetService {
     const slotProps = normalizeGenerationSlotProps(input);
     const stage = normalizeProductionStage(input.stage ?? slotProps.stage ?? "shots");
     const index = canvas.shapes.length;
+    const width = input.width ?? 320;
+    const height = input.height ?? 150;
+    const requestedPosition = { x: input.x ?? 1140, y: input.y ?? 680 };
+    const position = input.x === undefined && input.y === undefined
+      ? findOpenCanvasPosition(requestedPosition, width, height, canvas.shapes, { stepY: height + 32 })
+      : requestedPosition;
     const shape = this.upsertCanvasShape({
       canvas_id: canvas.canvas_id,
       shape_id: input.shape_id,
@@ -944,10 +1018,10 @@ export class VideoAssetService {
       subject_type: "note",
       subject_id: input.subject_id ?? `slot:${slotProps.slot}`,
       title: input.title ?? generationSlotTitle(slotProps),
-      x: input.x ?? 1140,
-      y: input.y ?? (680 + index * 28),
-      width: input.width ?? 320,
-      height: input.height ?? 150,
+      x: position.x,
+      y: position.y,
+      width,
+      height,
       rotation: input.rotation,
       z_index: input.z_index ?? (index + 1),
       props: {
@@ -1005,17 +1079,34 @@ export class VideoAssetService {
     this.requireDb();
     if (!input.canvas_id) throw new Error("canvas_id is required");
     const canvas = this.requireCanvas(input.canvas_id);
+    if (input.expected_updated_at !== undefined && input.expected_updated_at !== canvas.updated_at) {
+      throw new Error(`canvas snapshot version conflict: expected_updated_at ${input.expected_updated_at} does not match ${canvas.updated_at}`);
+    }
     const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
     const now = new Date().toISOString();
     const snapshot_id = id("snap");
     const state = input.state && typeof input.state === "object" ? input.state : {};
     const viewport = input.viewport ? normalizeViewport(input.viewport) : JSON.parse(canvas.viewport_json || "{}");
-    const document = input.document && typeof input.document === "object" ? input.document : JSON.parse(canvas.document_json || "{}");
+    const previousDocument = JSON.parse(canvas.document_json || "{}");
+    const documentMode = normalizeCanvasDocumentMode(input.document_mode);
+    if (input.document && documentMode === "replace" && input.confirm_document_replace !== true) {
+      throw new Error("confirm_document_replace=true is required when document_mode=replace");
+    }
+    const document = input.document && typeof input.document === "object"
+      ? (documentMode === "replace" ? input.document : mergeJsonObjects(previousDocument, input.document))
+      : previousDocument;
     this.db.prepare("INSERT INTO canvas_snapshots (snapshot_id, canvas_id, state_json, created_by, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(snapshot_id, input.canvas_id, JSON.stringify(state), actor.actor_id, now);
     this.db.prepare("UPDATE canvases SET viewport_json = ?, document_json = ?, updated_at = ? WHERE canvas_id = ?")
       .run(JSON.stringify(viewport), JSON.stringify(document), now, input.canvas_id);
-    this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.snapshot.save", message: `Saved canvas snapshot ${snapshot_id}`, actor_id: actor.actor_id, changes: { canvas_id: input.canvas_id, snapshot_id } });
+    this.commit({
+      scope: "project",
+      target_id: canvas.project_id,
+      action: "canvas.snapshot.save",
+      message: `已保存画布快照 ${snapshot_id}`,
+      actor_id: actor.actor_id,
+      changes: { canvas_id: input.canvas_id, snapshot_id, document_mode: documentMode, expected_updated_at: input.expected_updated_at ?? null }
+    });
     return this.getCanvas({ canvas_id: input.canvas_id });
   }
 
@@ -1247,7 +1338,7 @@ export class VideoAssetService {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(shape_id, input.canvas_id, shape_type, subject_type, input.subject_id ?? null, title ?? null, x, y, width, height, rotation, z_index, JSON.stringify(props), actor.actor_id, now, now);
     }
     this.touchCanvas(input.canvas_id, now);
-    this.commit({ scope: "project", target_id: canvas.project_id, action: existing ? "canvas.shape.update" : "canvas.shape.create", message: `${existing ? "Updated" : "Created"} canvas shape ${shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: input.canvas_id, shape_id, subject_type, subject_id: input.subject_id ?? existing?.subject_id ?? null } });
+    this.commit({ scope: "project", target_id: canvas.project_id, action: existing ? "canvas.shape.update" : "canvas.shape.create", message: `${existing ? "已更新" : "已创建"}画布卡片：${shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: input.canvas_id, shape_id, subject_type, subject_id: input.subject_id ?? existing?.subject_id ?? null } });
     return canvasShapeFromRow(this.getCanvasShapeRow(shape_id));
   }
 
@@ -1262,7 +1353,7 @@ export class VideoAssetService {
     this.db.prepare("DELETE FROM canvas_edges WHERE source_shape_id = ? OR target_shape_id = ?").run(input.shape_id, input.shape_id);
     this.db.prepare("DELETE FROM canvas_shapes WHERE shape_id = ?").run(input.shape_id);
     this.touchCanvas(shape.canvas_id, now);
-    this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.shape.delete", message: `Deleted canvas shape ${input.shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: shape.canvas_id, shape_id: input.shape_id, removed_edges: Number(removedEdges?.count ?? 0) } });
+    this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.shape.delete", message: `已删除画布卡片：${input.shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: shape.canvas_id, shape_id: input.shape_id, removed_edges: Number(removedEdges?.count ?? 0) } });
     return { shape_id: input.shape_id, deleted: true, removed_edges: Number(removedEdges?.count ?? 0) };
   }
 
@@ -1283,7 +1374,7 @@ export class VideoAssetService {
       ON CONFLICT(edge_id) DO UPDATE SET source_shape_id = excluded.source_shape_id, target_shape_id = excluded.target_shape_id, relation_type = excluded.relation_type, label = excluded.label, props_json = excluded.props_json, updated_at = excluded.updated_at`)
       .run(edge_id, input.canvas_id, input.source_shape_id, input.target_shape_id, relation_type, input.label ?? null, JSON.stringify(props), actor.actor_id, now, now);
     this.touchCanvas(input.canvas_id, now);
-    this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.edge.link", message: `Linked canvas shapes ${input.source_shape_id} -> ${input.target_shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: input.canvas_id, edge_id, relation_type } });
+    this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.edge.link", message: `已连接画布卡片：${input.source_shape_id} → ${input.target_shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: input.canvas_id, edge_id, relation_type } });
     return canvasEdgeFromRow(this.db.prepare("SELECT * FROM canvas_edges WHERE edge_id = ?").get(edge_id));
   }
 
@@ -1297,7 +1388,7 @@ export class VideoAssetService {
     const now = new Date().toISOString();
     this.db.prepare("DELETE FROM canvas_edges WHERE edge_id = ?").run(input.edge_id);
     this.touchCanvas(edge.canvas_id, now);
-    this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.edge.unlink", message: `Unlinked canvas edge ${input.edge_id}`, actor_id: actor.actor_id, changes: { canvas_id: edge.canvas_id, edge_id: input.edge_id } });
+    this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.edge.unlink", message: `已解除画布连线：${input.edge_id}`, actor_id: actor.actor_id, changes: { canvas_id: edge.canvas_id, edge_id: input.edge_id } });
     return { edge_id: input.edge_id, deleted: true };
   }
 
@@ -1447,6 +1538,7 @@ export class VideoAssetService {
       inputs,
       parameters
     });
+    const generationGateReady = generationPackage.gates.ok;
     const task = {
       task_kind: "video_generation",
       generation_type: generationPackage.generation_type,
@@ -1463,7 +1555,7 @@ export class VideoAssetService {
         recommended_provider: dreaminaCli.provider.provider_id,
         mode: "manual_or_agent_executed_cli",
         preflight: dreaminaCli.preflight,
-        command: dreaminaCli.command,
+        command: generationGateReady ? dreaminaCli.command : null,
         postprocess: dreaminaCli.postprocess
       }
     };
@@ -1471,11 +1563,12 @@ export class VideoAssetService {
       version: 1,
       source: "canvas_generation_handoff",
       created_at: new Date().toISOString(),
-      status: generationPackage.gates.ok ? "ready" : "blocked",
+      status: generationGateReady && dreaminaCli.ready ? "ready" : "blocked",
       package: generationPackage,
       task,
       validation: {
         gates: generationPackage.gates,
+        generation_gate_blockers: generationPackage.gates.errors,
         input_count: generationPackage.inputs.length,
         stage_ready: generationPackage.production_stage_gaps.length === 0,
         output_spec_ready: Boolean(outputSpec.aspect_ratio && outputSpec.resolution && outputSpec.fps),
@@ -1507,7 +1600,10 @@ export class VideoAssetService {
       download_and_register: guide.download_and_register,
       canvas_writeback: guide.canvas_writeback,
       troubleshooting: guide.troubleshooting,
-      blockers: handoff.validation.dreamina_cli_blockers,
+      blockers: [
+        ...(handoff.validation.generation_gate_blockers ?? []),
+        ...(handoff.validation.dreamina_cli_blockers ?? [])
+      ],
       next_actions: dreaminaCliNextActions({ handoff, preflight, command })
     };
   }
@@ -1543,6 +1639,7 @@ export class VideoAssetService {
     const timeoutMs = clampInteger(input.timeout_ms ?? Math.max(120000, (videoConfig.poll + 90) * 1000), 30000, 900000, "timeout_ms");
     const blockers = [
       ...(handoff.status === "ready" ? [] : ["canvas generation handoff is not ready"]),
+      ...(handoff.validation.generation_gate_blockers ?? []),
       ...(handoff.validation.dreamina_cli_blockers ?? []),
       ...(command.blockers ?? [])
     ];
@@ -1565,7 +1662,7 @@ export class VideoAssetService {
       },
       parameters: videoConfig,
       preflight: [{ name: "user_credit", argv: [DEFAULT_DREAMINA_CLI_PATH || "dreamina", "user_credit"], required: true }],
-      command: command.command,
+      command: blockers.length ? null : command.command,
       reference_inputs: command.reference_inputs ?? null,
       output_dir: outputDir,
       blockers,
@@ -1751,7 +1848,7 @@ export class VideoAssetService {
       shape: enriched,
       annotation_target: annotationTarget,
       review: {
-        title: input.title ?? `Review: ${shape.title ?? shape.shape_id}`,
+        title: input.title ?? `审阅：${shape.title ?? shape.shape_id}`,
         body: input.body ?? "",
         severity: input.severity ?? "note",
         requested_change: input.requested_change ?? null,
@@ -1762,7 +1859,7 @@ export class VideoAssetService {
         target_type: annotationTarget.target_type,
         target_id: annotationTarget.target_id,
         annotation_type: input.annotation_type ?? "review_note",
-        title: input.title ?? `Review: ${shape.title ?? shape.shape_id}`,
+        title: input.title ?? `审阅：${shape.title ?? shape.shape_id}`,
         visibility: input.visibility ?? "project"
       } : null
     };
@@ -1818,7 +1915,7 @@ export class VideoAssetService {
     const slotShapeId = input.slot_shape_id ?? sourceProps.slot_shape_id ?? null;
     const slotShape = slotShapeId ? canvas.shapes.find((shape) => shape.shape_id === slotShapeId) ?? null : null;
     const lineageEdge = previousShape ? canvas.edges.find((edge) => edge.source_shape_id === previousShape.shape_id && edge.target_shape_id === sourceShape.shape_id) ?? null : null;
-    const body = input.body ?? input.requested_change ?? annotation?.body ?? "Review requested.";
+    const body = input.body ?? input.requested_change ?? annotation?.body ?? "请求审阅。";
     const severity = input.severity ?? annotation?.structured?.severity ?? "revision";
     const requested_change = input.requested_change ?? annotation?.structured?.requested_change ?? body;
     const title = input.title ?? `返修卡：${sourceShape.title ?? sourceShape.shape_id}`;
@@ -1872,7 +1969,7 @@ export class VideoAssetService {
       source_shape_id: sourceShape.shape_id,
       target_shape_id: shape.shape_id,
       relation_type: "references",
-      label: "revision card",
+      label: "返修卡",
       props: {
         source: "video_canvas_create_revision_card",
         semantic: "reviewed_by",
@@ -1970,7 +2067,7 @@ export class VideoAssetService {
     const writebackSemantics = generationWritebackSemantics(slotSpec.replace_policy, priorOutput);
     const actor_id = input.actor_id ?? DEFAULT_ACTOR;
     const actor_type = input.actor_type ?? "agent";
-    const idempotencyKey = input.idempotency_key ?? generatedAssetIdempotencyKey({
+    const idempotencyKey = normalizeGeneratedAssetIdempotencyKey(input.idempotency_key, {
       file_path: input.file_path,
       slot_shape_id: slot.shape_id,
       replace_policy: slotSpec.replace_policy,
@@ -1992,7 +2089,8 @@ export class VideoAssetService {
         lint,
         idempotent: {
           reused: true,
-          key: idempotencyKey,
+          key: idempotencyKey.key,
+          source_sha256: idempotencyKey.source_sha256,
           reason: "matched_existing_generated_asset_writeback"
         }
       };
@@ -2007,13 +2105,12 @@ export class VideoAssetService {
       actor_id,
       actor_type
     });
-    if (input.license_status || input.risk_level || input.source?.source_type || input.rights_notes) {
+    if (input.license_status || input.risk_level || input.rights_notes) {
       this.updateAssetRights({
         asset_id: asset.asset_id,
         license_status: input.license_status ?? asset.license_status ?? "unknown",
         risk_level: input.risk_level ?? asset.risk_level ?? "unknown",
         notes: input.rights_notes ?? `由画布生成槽 ${slot.shape_id} 产生`,
-        source: input.source,
         actor_id,
         actor_type
       });
@@ -2031,10 +2128,11 @@ export class VideoAssetService {
         actor_type
       });
     }
+    const currentAsset = this.getAsset({ asset_id: asset.asset_id });
     const ref = this.addProjectRef({
       project_id: canvas.project_id,
-      asset_id: asset.asset_id,
-      asset_version_id: asset.default_version_id,
+      asset_id: currentAsset.asset_id,
+      asset_version_id: currentAsset.default_version_id,
       role: input.project_ref?.role ?? input.role ?? "generated_output",
       usage_scope: input.project_ref?.usage_scope ?? `${generationTypeText(slotSpec.generation_type)}生成槽输出。`,
       pin_mode: input.project_ref?.pin_mode ?? "pinned",
@@ -2044,18 +2142,20 @@ export class VideoAssetService {
       actor_type
     });
     const placement = input.writeback?.placement ?? "right";
-    const offset = writebackOffset(placement, slot, canvas);
+    const outputWidth = input.width ?? 320;
+    const outputHeight = input.height ?? 150;
+    const offset = writebackOffset(placement, slot, canvas, outputWidth, outputHeight);
     const shape = this.upsertCanvasShape({
       canvas_id: canvas.canvas_id,
       shape_id: input.shape_id,
       shape_type: "reference_card",
       subject_type: "project_ref",
       subject_id: ref.reference_id,
-      title: input.title ?? `生成结果 ${shortId(asset.asset_id)}`,
+      title: input.title ?? `生成结果 ${shortId(currentAsset.asset_id)}`,
       x: input.x ?? offset.x,
       y: input.y ?? offset.y,
-      width: input.width ?? 320,
-      height: input.height ?? 150,
+      width: outputWidth,
+      height: outputHeight,
       props: {
         role: writebackSemantics.output_role,
         stage: slot.props?.stage ?? "shots",
@@ -2073,8 +2173,8 @@ export class VideoAssetService {
         previous_asset_id: priorOutput?.props?.asset_id ?? null,
         previous_asset_version_id: priorOutput?.props?.asset_version_id ?? null,
         previous_reference_id: priorOutput?.props?.reference_id ?? null,
-        asset_id: asset.asset_id,
-        asset_version_id: asset.default_version_id,
+        asset_id: currentAsset.asset_id,
+        asset_version_id: currentAsset.default_version_id,
         reference_id: ref.reference_id,
         lineage_key: idempotencyKey.key
       },
@@ -2090,8 +2190,8 @@ export class VideoAssetService {
       label: input.writeback?.label ?? "生成输出",
       props: {
         source: "video_canvas_insert_generated_asset",
-        asset_id: asset.asset_id,
-        asset_version_id: asset.default_version_id,
+        asset_id: currentAsset.asset_id,
+        asset_version_id: currentAsset.default_version_id,
         writeback_policy: slotSpec.replace_policy,
         writeback_semantic: writebackSemantics.semantic,
         idempotency_key: idempotencyKey.key,
@@ -2116,8 +2216,8 @@ export class VideoAssetService {
           writeback_policy: slotSpec.replace_policy,
           previous_asset_id: priorOutput.props?.asset_id ?? null,
           previous_asset_version_id: priorOutput.props?.asset_version_id ?? null,
-          asset_id: asset.asset_id,
-          asset_version_id: asset.default_version_id
+          asset_id: currentAsset.asset_id,
+          asset_version_id: currentAsset.default_version_id
         },
         actor_id,
         actor_type
@@ -2128,8 +2228,8 @@ export class VideoAssetService {
         relation_type: writebackSemantics.asset_relation_type,
         source_asset_id: priorOutput.props.asset_id,
         source_version_id: priorOutput.props.asset_version_id,
-        target_asset_id: asset.asset_id,
-        target_version_id: asset.default_version_id,
+        target_asset_id: currentAsset.asset_id,
+        target_version_id: currentAsset.default_version_id,
         copy_type: slotSpec.replace_policy,
         reason: `${writebackSemantics.lineage_label}，来源生成槽 ${slot.shape_id}`,
         actor_id,
@@ -2144,7 +2244,7 @@ export class VideoAssetService {
     });
     const lint = this.lintCanvas({ canvas_id: canvas.canvas_id });
     return {
-      asset,
+      asset: currentAsset,
       project_ref: ref,
       shape,
       edge,
@@ -2155,6 +2255,7 @@ export class VideoAssetService {
       idempotent: {
         reused: false,
         key: idempotencyKey.key,
+        source_sha256: idempotencyKey.source_sha256,
         reason: "created_new_generated_asset_writeback"
       }
     };
@@ -2846,7 +2947,7 @@ export class VideoAssetService {
     if (!isInsidePath(targetDir.root_absolute, targetPath)) throw new Error("upload target escapes staging root");
     await fs.promises.writeFile(targetPath, buffer, { flag: "wx" });
     const relative_path = normalizeRelativePath(path.posix.join(targetDir.relative_path_posix, targetName));
-    this.commit({ scope: "system", target_id: relative_path, action: "staging.upload", message: "Uploaded staging file " + fileName, actor_id: actor.actor_id, changes: { root_key: "asset-staging", relative_path, size_bytes: buffer.length } });
+    this.commit({ scope: "system", target_id: relative_path, action: "staging.upload", message: "已上传暂存文件：" + fileName, actor_id: actor.actor_id, changes: { root_key: "asset-staging", relative_path, size_bytes: buffer.length } });
     return this.inspectFile({ root_key: "asset-staging", relative_path });
   }
 
@@ -2868,7 +2969,7 @@ export class VideoAssetService {
       source: input.source
     });
     const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
-    this.commit({ scope: "system", target_id: normalizeRelativePath(input.relative_path), action: "staging.ingest", message: "Ingested staging file " + path.basename(resolved.absolute_path), actor_id: actor.actor_id, changes: { root_key: "asset-staging", relative_path: normalizeRelativePath(input.relative_path), asset_id: asset.asset_id, default_version_id: asset.default_version_id } });
+    this.commit({ scope: "system", target_id: normalizeRelativePath(input.relative_path), action: "staging.ingest", message: "已入库暂存文件：" + path.basename(resolved.absolute_path), actor_id: actor.actor_id, changes: { root_key: "asset-staging", relative_path: normalizeRelativePath(input.relative_path), asset_id: asset.asset_id, default_version_id: asset.default_version_id } });
     return { ok: true, asset, file: await this.inspectFile({ root_key: "asset-staging", relative_path: input.relative_path }) };
   }
 
@@ -2882,7 +2983,7 @@ export class VideoAssetService {
     const size_bytes = stat.size;
     await fs.promises.unlink(resolved.absolute_path);
     const relative_path = normalizeRelativePath(input.relative_path);
-    this.commit({ scope: "system", target_id: relative_path, action: "staging.reject", message: "Rejected staging file " + path.basename(resolved.absolute_path), actor_id: actor.actor_id, changes: { root_key: "asset-staging", relative_path, size_bytes, reason: input.reason ?? null } });
+    this.commit({ scope: "system", target_id: relative_path, action: "staging.reject", message: "已拒绝暂存文件：" + path.basename(resolved.absolute_path), actor_id: actor.actor_id, changes: { root_key: "asset-staging", relative_path, size_bytes, reason: input.reason ?? null } });
     return { ok: true, root_key: "asset-staging", relative_path, rejected: true };
   }
 
@@ -2905,6 +3006,7 @@ export class VideoAssetService {
   listCommits(input = {}) {
     this.requireDb();
     const limit = clampInteger(input.limit ?? 80, 1, 300, "limit");
+    const offset = clampInteger(input.offset ?? 0, 0, 100000, "offset");
     const where = [];
     const params = [];
     if (input.scope) {
@@ -2920,20 +3022,12 @@ export class VideoAssetService {
       params.push(String(input.action));
     }
     const query = String(input.query ?? "").trim().toLowerCase();
-    const sql = `SELECT * FROM commits${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC LIMIT ?`;
-    const rows = this.db.prepare(sql).all(...params, query ? limit * 3 : limit);
-    return rows
-      .filter((row) => {
-        if (!query) return true;
-        return row.commit_id.toLowerCase().includes(query)
-          || row.scope.toLowerCase().includes(query)
-          || row.target_id.toLowerCase().includes(query)
-          || row.action.toLowerCase().includes(query)
-          || row.message.toLowerCase().includes(query)
-          || row.actor_id.toLowerCase().includes(query);
-      })
-      .slice(0, limit)
-      .map(commitFromRow);
+    if (query) {
+      where.push("(instr(lower(commit_id), ?) > 0 OR instr(lower(scope), ?) > 0 OR instr(lower(target_id), ?) > 0 OR instr(lower(action), ?) > 0 OR instr(lower(message), ?) > 0 OR instr(lower(COALESCE(actor_id, '')), ?) > 0)");
+      params.push(query, query, query, query, query, query);
+    }
+    const sql = `SELECT * FROM commits${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, commit_id DESC LIMIT ? OFFSET ?`;
+    return this.db.prepare(sql).all(...params, limit, offset).map(commitFromRow);
   }
 
   classifyAsset(input) {
@@ -2951,7 +3045,7 @@ export class VideoAssetService {
     const classification_id = id("cls");
     this.db.prepare(`INSERT INTO asset_classifications (classification_id, asset_id, asset_version_id, domain, type, subtype, confidence, source, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(classification_id, input.asset_id, input.asset_version_id ?? null, domain, input.type, input.subtype ?? null, confidence, source, actor.actor_id, now, now);
-    this.commit({ scope: "asset", target_id: input.asset_id, action: "asset.classify", message: `Classified asset as ${domain}.${input.type}`, actor_id: actor.actor_id, changes: { classification_id, asset_version_id: input.asset_version_id ?? null, domain, type: input.type, subtype: input.subtype ?? null, confidence } });
+    this.commit({ scope: "asset", target_id: input.asset_id, action: "asset.classify", message: `已分类素材：${domain}.${input.type}`, actor_id: actor.actor_id, changes: { classification_id, asset_version_id: input.asset_version_id ?? null, domain, type: input.type, subtype: input.subtype ?? null, confidence } });
     return this.getAssetClassification({ asset_id: input.asset_id, asset_version_id: input.asset_version_id });
   }
 
@@ -2982,22 +3076,31 @@ export class VideoAssetService {
     this.db.prepare(`INSERT INTO production_entities (entity_id, entity_key, entity_type, canonical_name, aliases_json, description, project_id, status, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(entity_id, input.entity_key, entity_type, input.canonical_name, JSON.stringify(input.aliases ?? []), input.description ?? null, input.project_id ?? null, input.status ?? "active", actor.actor_id, now, now);
-    this.commit({ scope: "system", target_id: entity_id, action: "entity.create", message: `Created entity ${input.entity_key}`, actor_id: actor.actor_id, changes: { entity_key: input.entity_key, entity_type } });
+    this.commit({ scope: "system", target_id: entity_id, action: "entity.create", message: `已创建生产实体：${input.entity_key}`, actor_id: actor.actor_id, changes: { entity_key: input.entity_key, entity_type } });
     return this.getEntityById(entity_id);
   }
 
   searchEntities(input = {}) {
     this.requireDb();
-    const limit = Math.min(Number(input.limit ?? 20), 100);
-    const rows = input.entity_type
-      ? this.db.prepare("SELECT * FROM production_entities WHERE entity_type = ? ORDER BY updated_at DESC LIMIT ?").all(input.entity_type, limit)
-      : this.db.prepare("SELECT * FROM production_entities ORDER BY updated_at DESC LIMIT ?").all(limit);
-    const query = String(input.query ?? "").toLowerCase();
-    return rows.map(entityFromRow).filter((row) => {
-      if (input.project_id && row.project_id !== input.project_id) return false;
-      if (!query) return true;
-      return row.entity_key.toLowerCase().includes(query) || row.canonical_name.toLowerCase().includes(query) || row.aliases.some((alias) => String(alias).toLowerCase().includes(query));
-    });
+    const limit = clampInteger(input.limit ?? 20, 1, 100, "limit");
+    const offset = clampInteger(input.offset ?? 0, 0, 100000, "offset");
+    const query = String(input.query ?? "").trim().toLowerCase();
+    const where = [];
+    const params = [];
+    if (input.entity_type) {
+      where.push("entity_type = ?");
+      params.push(String(input.entity_type));
+    }
+    if (input.project_id) {
+      where.push("project_id = ?");
+      params.push(String(input.project_id));
+    }
+    if (query) {
+      where.push("(instr(lower(entity_key), ?) > 0 OR instr(lower(canonical_name), ?) > 0 OR instr(lower(aliases_json), ?) > 0)");
+      params.push(query, query, query);
+    }
+    const sql = `SELECT * FROM production_entities${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY updated_at DESC, entity_id DESC LIMIT ? OFFSET ?`;
+    return this.db.prepare(sql).all(...params, limit, offset).map(entityFromRow);
   }
 
   linkEntityAsset(input) {
@@ -3016,7 +3119,7 @@ export class VideoAssetService {
     this.db.prepare(`INSERT INTO asset_entity_links (link_id, asset_id, asset_version_id, entity_id, relation_type, confidence, notes, created_by, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(link_id, input.asset_id, input.asset_version_id ?? null, entity.entity_id, relation_type, confidence, input.notes ?? null, actor.actor_id, now);
-    this.commit({ scope: "asset", target_id: input.asset_id, action: "asset.entity.link", message: `Linked asset to ${entity.entity_key}`, actor_id: actor.actor_id, changes: { link_id, entity_id: entity.entity_id, relation_type, confidence } });
+    this.commit({ scope: "asset", target_id: input.asset_id, action: "asset.entity.link", message: `已关联素材与实体：${entity.entity_key}`, actor_id: actor.actor_id, changes: { link_id, entity_id: entity.entity_id, relation_type, confidence } });
     return { ...this.getAssetClassification({ asset_id: input.asset_id, asset_version_id: input.asset_version_id }), link_id };
   }
 
@@ -3037,7 +3140,7 @@ export class VideoAssetService {
     this.db.prepare(`INSERT INTO asset_annotations (annotation_id, target_type, target_id, annotation_type, title, body, structured_json, status, visibility, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
       .run(annotation_id, target_type, input.target_id, annotation_type, input.title, input.body, jsonOrNull(input.structured), visibility, actor.actor_id, now, now);
-    this.commit({ scope: target_type === "project_ref" ? "project" : "asset", target_id: input.target_id, action: "asset.annotation.create", message: `Annotated ${target_type} ${input.target_id}`, actor_id: actor.actor_id, changes: { annotation_id, annotation_type } });
+    this.commit({ scope: target_type === "project_ref" ? "project" : "asset", target_id: input.target_id, action: "asset.annotation.create", message: `已创建批注：${target_type} ${input.target_id}`, actor_id: actor.actor_id, changes: { annotation_id, annotation_type } });
     return this.getAnnotation(annotation_id);
   }
 
@@ -3063,7 +3166,7 @@ export class VideoAssetService {
     const now = new Date().toISOString();
     this.db.prepare(`UPDATE asset_annotations SET title = ?, body = ?, structured_json = ?, status = ?, visibility = ?, updated_at = ? WHERE annotation_id = ?`)
       .run(input.title ?? existing.title, input.body ?? existing.body, input.structured === undefined ? existing.structured_json : jsonOrNull(input.structured), status, visibility, now, input.annotation_id);
-    this.commit({ scope: existing.target_type === "project_ref" ? "project" : "asset", target_id: existing.target_id, action: "asset.annotation.update", message: `Updated annotation ${input.annotation_id}`, actor_id: actor.actor_id, changes: { annotation_id: input.annotation_id, status, visibility } });
+    this.commit({ scope: existing.target_type === "project_ref" ? "project" : "asset", target_id: existing.target_id, action: "asset.annotation.update", message: `已更新批注：${input.annotation_id}`, actor_id: actor.actor_id, changes: { annotation_id: input.annotation_id, status, visibility } });
     return this.getAnnotation(input.annotation_id);
   }
 
@@ -3083,24 +3186,24 @@ export class VideoAssetService {
       const primary = classifications[0] ?? null;
       const keyDomain = primary && KEY_DOMAINS.has(primary.domain);
       if (stage === "delivery" && ref.pin_mode !== "pinned" && ref.required) {
-        pushContinuityIssue(refIssues, "error", "DELIVERY_REF_NOT_PINNED", ref, `Delivery reference is ${ref.pin_mode}; pin a concrete asset_version_id before delivery.`);
+        pushContinuityIssue(refIssues, "error", "DELIVERY_REF_NOT_PINNED", ref, `交付阶段引用当前为 ${ref.pin_mode}；交付前必须固定到明确的 asset_version_id。`);
       }
       if (!primary) {
-        pushContinuityIssue(refIssues, ref.required ? "error" : "info", "MISSING_TAXONOMY", ref, "Project reference has no asset taxonomy classification.");
+        pushContinuityIssue(refIssues, ref.required ? "error" : "info", "MISSING_TAXONOMY", ref, "项目素材引用缺少 taxonomy 分类。");
       }
       if (primary && ["candidate", "inferred"].includes(primary.confidence)) {
-        pushContinuityIssue(refIssues, stage === "delivery" && ref.required ? "error" : "warning", "UNCONFIRMED_TAXONOMY", ref, `Taxonomy confidence is ${primary.confidence}; confirm before delivery.`);
+        pushContinuityIssue(refIssues, stage === "delivery" && ref.required ? "error" : "warning", "UNCONFIRMED_TAXONOMY", ref, `taxonomy 置信度为 ${primary.confidence}；交付前必须确认。`);
       }
       const links = this.getEntityLinksForRef(ref);
       if (keyDomain && links.length === 0) {
-        pushContinuityIssue(refIssues, ref.required ? "error" : "info", "MISSING_ENTITY_LINK", ref, `Required ${primary.domain} asset has no entity link.`);
+        pushContinuityIssue(refIssues, ref.required ? "error" : "info", "MISSING_ENTITY_LINK", ref, `必需的 ${primary.domain} 素材缺少实体关联。`);
       }
       if (links.some((link) => ["candidate", "inferred"].includes(link.confidence))) {
-        pushContinuityIssue(refIssues, stage === "delivery" && ref.required ? "error" : "warning", "UNCONFIRMED_ENTITY_LINK", ref, "Entity link is candidate/inferred; confirm before delivery.");
+        pushContinuityIssue(refIssues, stage === "delivery" && ref.required ? "error" : "warning", "UNCONFIRMED_ENTITY_LINK", ref, "实体关联仍为 candidate/inferred；交付前必须确认。" );
       }
       const annotations = this.getAnnotationsForContinuity(ref, links, primary?.domain);
       if (keyDomain && annotations.required_count === 0) {
-        pushContinuityIssue(refIssues, ref.required ? "warning" : "info", "MISSING_KEY_ANNOTATION", ref, `Required ${primary.domain} asset lacks active ${requiredAnnotationForDomain(primary.domain)} annotation.`);
+        pushContinuityIssue(refIssues, ref.required ? "warning" : "info", "MISSING_KEY_ANNOTATION", ref, `必需的 ${primary.domain} 素材缺少有效的 ${requiredAnnotationForDomain(primary.domain)} 批注。`);
       }
       for (const link of links) {
         const occurrence = { ref, asset_version_id: ref.asset_version_id, entity_key: link.entity_key, entity_type: link.entity_type };
@@ -3131,7 +3234,7 @@ export class VideoAssetService {
         for (const ownerKey of entry.costume_owner_keys) {
           if (!characterEntityKeys.has(ownerKey)) {
             const ref = refs.find((item) => item.reference_id === entry.reference_id);
-            pushProjectIssue("warning", "COSTUME_OWNER_NOT_IN_PROJECT", ref, `Costume owner_character_key ${ownerKey} is not linked as a character in this project.`);
+            pushProjectIssue("warning", "COSTUME_OWNER_NOT_IN_PROJECT", ref, `服装 owner_character_key=${ownerKey} 未在本项目关联为角色实体。`);
           }
         }
       }
@@ -3140,14 +3243,14 @@ export class VideoAssetService {
       const versions = new Set(occurrences.map((item) => item.asset_version_id));
       if (versions.size > 1) {
         const first = occurrences[0];
-        pushProjectIssue("warning", "ENTITY_VERSION_CONFLICT", first.ref, `Entity ${first.entity_key} is linked to multiple asset versions in this project: ${[...versions].join(", ")}. Add continuity notes or pin the intended version set.`);
+        pushProjectIssue("warning", "ENTITY_VERSION_CONFLICT", first.ref, `实体 ${first.entity_key} 在本项目关联了多个素材版本：${[...versions].join(", ")}。请补充连续性说明或固定预期版本集合。`);
       }
     }
     for (const occurrences of versionEntityOccurrences.values()) {
       const entities = new Set(occurrences.map((item) => item.entity_id));
       if (entities.size > 1) {
         const first = occurrences[0];
-        pushProjectIssue("warning", "MULTI_ENTITY_LINK_CONFLICT", first.ref, `Asset version ${first.asset_version_id} is linked to multiple ${first.entity_type} entities in this project.`);
+        pushProjectIssue("warning", "MULTI_ENTITY_LINK_CONFLICT", first.ref, `素材版本 ${first.asset_version_id} 在本项目关联了多个 ${first.entity_type} 实体。`);
       }
     }
     const waived = ref_reports.flatMap((ref) => ref.waived_issues);
@@ -3174,10 +3277,10 @@ export class VideoAssetService {
       const annotations = this.getAnnotationsForContinuity({ asset_id: asset.asset_id, asset_version_id: version_id, reference_id: null }, links, primary?.domain);
       const assetIssues = [];
       const pseudoRef = { reference_id: null, asset_id: asset.asset_id, asset_version_id: version_id, required: 1 };
-      if (!primary) pushContinuityIssue(assetIssues, "warning", "MISSING_TAXONOMY", pseudoRef, "Asset has no taxonomy classification.");
-      if (primary && ["candidate", "inferred"].includes(primary.confidence)) pushContinuityIssue(assetIssues, "warning", "UNCONFIRMED_TAXONOMY", pseudoRef, `Taxonomy confidence is ${primary.confidence}.`);
-      if (keyDomain && links.length === 0) pushContinuityIssue(assetIssues, "warning", "MISSING_ENTITY_LINK", pseudoRef, `Key ${primary.domain} asset has no entity link.`);
-      if (keyDomain && annotations.required_count === 0) pushContinuityIssue(assetIssues, "info", "MISSING_KEY_ANNOTATION", pseudoRef, `Key ${primary.domain} asset lacks active ${requiredAnnotationForDomain(primary.domain)} annotation.`);
+      if (!primary) pushContinuityIssue(assetIssues, "warning", "MISSING_TAXONOMY", pseudoRef, "素材缺少 taxonomy 分类。");
+      if (primary && ["candidate", "inferred"].includes(primary.confidence)) pushContinuityIssue(assetIssues, "warning", "UNCONFIRMED_TAXONOMY", pseudoRef, `taxonomy 置信度为 ${primary.confidence}。`);
+      if (keyDomain && links.length === 0) pushContinuityIssue(assetIssues, "warning", "MISSING_ENTITY_LINK", pseudoRef, `关键 ${primary.domain} 素材缺少实体关联。`);
+      if (keyDomain && annotations.required_count === 0) pushContinuityIssue(assetIssues, "info", "MISSING_KEY_ANNOTATION", pseudoRef, `关键 ${primary.domain} 素材缺少有效的 ${requiredAnnotationForDomain(primary.domain)} 批注。`);
       const { active, waived } = filterWaivedIssues(assetIssues, annotations.details);
       issues.push(...active);
       assets.push({ asset_id: asset.asset_id, default_version_id: version_id, title: asset.title, media_type: asset.media_type, taxonomy: primary, entity_links: links, annotation_summary: annotations, issues: active, waived_issues: waived });
@@ -3250,7 +3353,7 @@ export class VideoAssetService {
       scope: "asset",
       target_id: version.asset_id,
       action: "asset.version.lazy_reprobe",
-      message: `Lazy re-probed media metadata for ${version.file_name}`,
+      message: `已延迟刷新媒体元数据：${version.file_name}`,
       actor_id: DEFAULT_ACTOR,
       changes: { asset_version_id: version.asset_version_id, fields }
     });
@@ -3648,6 +3751,7 @@ export class VideoAssetService {
   canvasGenerationGates({ project, inputs, generation_type, lint, production_stage_gaps, slots = {}, active_generation_slot = null }) {
     const errors = [];
     const warnings = [];
+    const waivers = [];
     if (!project) errors.push("未选择项目。");
     if (inputs.length === 0) errors.push("画布没有可用于生成准备的项目引用或素材卡。");
     if (!active_generation_slot) warnings.push("画布尚未选择生成槽，交接包将使用项目默认输出规格。");
@@ -3665,12 +3769,29 @@ export class VideoAssetService {
       if (!input.asset_version_id) errors.push("画布输入缺少具体资产版本：" + (input.title ?? input.shape_id));
       if (input.pin_mode === "candidate") warnings.push("候选引用需在正式生成前确认：" + input.reference_id);
       if (input.pin_mode === "follow_latest") warnings.push("跟随最新会降低复现性，建议固定版本：" + input.reference_id);
-      if (input.license_status && input.license_status !== "cleared") warnings.push("授权状态未清理：" + input.title + " (" + input.license_status + ")");
+      if (input.license_status !== "cleared") {
+        const waiver = generationGateWaiver(input, "ASSET_LICENSE_NOT_CLEARED");
+        if (waiver) {
+          waivers.push(waiver);
+          warnings.push("已按审计批注豁免授权门：" + input.title + " (" + (input.license_status ?? "unknown") + ")");
+        } else {
+          errors.push("授权状态未清理：" + input.title + " (" + (input.license_status ?? "unknown") + ")");
+        }
+      }
+      if (!input.taxonomy) {
+        const waiver = generationGateWaiver(input, "MISSING_TAXONOMY");
+        if (waiver) {
+          waivers.push(waiver);
+          warnings.push("已按审计批注豁免 taxonomy 门：" + input.title);
+        } else {
+          errors.push("生成输入缺少 taxonomy 分类：" + input.title);
+        }
+      }
       if (input.risk_level === "high") errors.push("高风险素材不能进入生成准备：" + input.title);
     }
     for (const gap of production_stage_gaps) warnings.push("生产画布缺口：" + gap.title + " / " + gap.missing.join(", "));
     for (const issue of lint.errors) errors.push(issue.message);
-    return { ok: errors.length === 0, errors, warnings };
+    return { ok: errors.length === 0, errors, warnings, waivers };
   }
 
   safeCanvasSubjectContext(shape, canvas) {
@@ -3980,17 +4101,53 @@ function annotationTargetForCanvasShape(shape) {
   return null;
 }
 
-function writebackOffset(placement, slot, canvas) {
-  const sameSlotOutputs = canvas.shapes.filter((shape) => shape.props?.slot_shape_id === slot.shape_id || isGeneratedOutputShape(shape)).length;
-  if (placement === "below") return { x: slot.x, y: slot.y + slot.height + 40 + sameSlotOutputs * 180 };
-  if (placement === "left") return { x: slot.x - 360, y: slot.y + sameSlotOutputs * 24 };
-  if (placement === "above") return { x: slot.x, y: slot.y - 190 - sameSlotOutputs * 180 };
-  return { x: slot.x + slot.width + 40, y: slot.y + sameSlotOutputs * 24 };
+function writebackOffset(placement, slot, canvas, width = 320, height = 150) {
+  const sameSlotOutputs = canvas.shapes.filter((shape) => isGeneratedOutputShape(shape) && shape.props?.slot_shape_id === slot.shape_id).length;
+  const stride = height + 32;
+  let candidate;
+  if (placement === "below") candidate = { x: slot.x, y: slot.y + slot.height + 40 + sameSlotOutputs * stride };
+  else if (placement === "left") candidate = { x: slot.x - width - 40, y: slot.y + sameSlotOutputs * stride };
+  else if (placement === "above") candidate = { x: slot.x, y: slot.y - height - 40 - sameSlotOutputs * stride };
+  else candidate = { x: slot.x + slot.width + 40, y: slot.y + sameSlotOutputs * stride };
+  return findOpenCanvasPosition(candidate, width, height, canvas.shapes, {
+    stepY: placement === "above" ? -stride : stride,
+    ignoreShapeIds: new Set([slot.shape_id])
+  });
 }
 
 function revisionCardOffset(sourceShape, canvas) {
   const sourceRevisionCards = canvas.shapes.filter((shape) => shape.props?.role === "revision_card" && shape.props?.source_shape_id === sourceShape.shape_id).length;
-  return { x: sourceShape.x + sourceShape.width + 48, y: sourceShape.y + sourceRevisionCards * 220 };
+  return findOpenCanvasPosition(
+    { x: sourceShape.x + sourceShape.width + 48, y: sourceShape.y + sourceRevisionCards * 220 },
+    340,
+    190,
+    canvas.shapes,
+    { stepY: 220, ignoreShapeIds: new Set([sourceShape.shape_id]) }
+  );
+}
+
+function findOpenCanvasPosition(candidate, width, height, shapes, options = {}) {
+  const stepY = Number(options.stepY ?? height + 32);
+  const ignoreShapeIds = options.ignoreShapeIds instanceof Set ? options.ignoreShapeIds : new Set();
+  const blockers = shapes.filter((shape) => shape.shape_type !== "section" && !ignoreShapeIds.has(shape.shape_id));
+  let position = { x: Number(candidate.x), y: Number(candidate.y) };
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const collides = blockers.some((shape) => canvasRectsOverlap(
+      { x: position.x, y: position.y, width, height },
+      { x: shape.x, y: shape.y, width: shape.width, height: shape.height },
+      16
+    ));
+    if (!collides) return position;
+    position = { ...position, y: position.y + stepY };
+  }
+  return position;
+}
+
+function canvasRectsOverlap(a, b, padding = 0) {
+  return a.x < b.x + b.width + padding
+    && a.x + a.width + padding > b.x
+    && a.y < b.y + b.height + padding
+    && a.y + a.height + padding > b.y;
 }
 
 function placementForGenerationSlotPolicy(policy) {
@@ -4069,6 +4226,26 @@ function generatedAssetIdempotencyKey(input = {}) {
   };
 }
 
+function normalizeGeneratedAssetIdempotencyKey(value, input = {}) {
+  if (value === undefined || value === null) return generatedAssetIdempotencyKey(input);
+  const source_sha256 = hashFileSync(input.file_path);
+  if (typeof value === "string") {
+    const key = value.trim();
+    if (!key) throw new Error("idempotency_key must not be empty");
+    return { key, source_sha256, scope: "generated_asset_writeback" };
+  }
+  if (typeof value === "object") {
+    const key = String(value.key ?? "").trim();
+    if (!key) throw new Error("idempotency_key.key is required");
+    return {
+      key,
+      source_sha256: value.source_sha256 ?? source_sha256,
+      scope: value.scope ?? "generated_asset_writeback"
+    };
+  }
+  throw new Error("idempotency_key must be a string or object");
+}
+
 function shortId(value) {
   const text = String(value ?? "");
   return text.length > 12 ? `${text.slice(0, 8)}...${text.slice(-4)}` : text;
@@ -4118,7 +4295,10 @@ function normalizeGenerationSlotRequiredRefs(value, options = {}) {
   if (value === undefined && options.allowUndefined) return [];
   if (value === null) return [];
   if (!Array.isArray(value)) throw new Error("required_refs must be an array");
-  return [...new Set(value.map((item) => normalizeGenerationSlotKey(item)).filter((item) => GENERATION_INPUT_SLOT_KEYS.has(item)))];
+  const normalized = value.map((item) => normalizeGenerationSlotKey(item));
+  const invalid = normalized.filter((item) => !GENERATION_INPUT_SLOT_KEYS.has(item));
+  if (invalid.length) throw new Error(`required_refs 只能包含输入槽 key：${[...new Set(invalid)].join(", ")}`);
+  return [...new Set(normalized)];
 }
 
 function normalizeGenerationSlotReplacePolicy(value) {
@@ -5067,6 +5247,20 @@ function waiverCodesFromAnnotations(annotations) {
   return codes;
 }
 
+function generationGateWaiver(input, code) {
+  const annotations = input.annotation_summary?.details ?? [];
+  const matching = annotations.filter((annotation) => waiverCodesFromAnnotations([annotation]).has(code));
+  if (!matching.length) return null;
+  return {
+    code,
+    title: input.title ?? null,
+    reference_id: input.reference_id ?? null,
+    asset_id: input.asset_id ?? null,
+    asset_version_id: input.asset_version_id ?? null,
+    annotation_ids: matching.map((annotation) => annotation.annotation_id)
+  };
+}
+
 function requiredAnnotationForDomain(domain) {
   return {
     character: "character_profile",
@@ -5086,6 +5280,29 @@ function normalizeViewport(value = {}) {
   };
 }
 
+function normalizeCanvasDocumentMode(value) {
+  const mode = String(value ?? "merge").trim();
+  if (!new Set(["merge", "replace"]).has(mode)) throw new Error(`Invalid document_mode: ${value}`);
+  return mode;
+}
+
+function mergeJsonObjects(base, patch) {
+  const safeBase = isMergeableJsonObject(base) ? base : {};
+  const safePatch = isMergeableJsonObject(patch) ? patch : {};
+  const result = { ...safeBase };
+  for (const [key, value] of Object.entries(safePatch)) {
+    if (["__proto__", "prototype", "constructor"].includes(key)) continue;
+    result[key] = isMergeableJsonObject(value) && isMergeableJsonObject(result[key])
+      ? mergeJsonObjects(result[key], value)
+      : value;
+  }
+  return result;
+}
+
+function isMergeableJsonObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 function normalizeStringArray(value, name, options = {}) {
   if (value === undefined && options.allowUndefined) return [];
   if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
@@ -5093,11 +5310,27 @@ function normalizeStringArray(value, name, options = {}) {
   const result = [];
   for (const item of value) {
     const normalized = String(item ?? "").trim();
+    if (options.maxLength && normalized.length > options.maxLength) throw new Error(`${name} items must not exceed ${options.maxLength} characters`);
     if (!normalized || seen.has(normalized)) continue;
     seen.add(normalized);
     result.push(normalized);
   }
+  if (options.maxItems && result.length > options.maxItems) throw new Error(`${name} must contain at most ${options.maxItems} items`);
   return result;
+}
+
+function boundedRequiredString(value, name, maxLength) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) throw new Error(`${name} must not be empty`);
+  if (normalized.length > maxLength) throw new Error(`${name} must not exceed ${maxLength} characters`);
+  return normalized;
+}
+
+function boundedNullableString(value, name, maxLength) {
+  if (value === null || value === undefined) return null;
+  const normalized = String(value).trim();
+  if (normalized.length > maxLength) throw new Error(`${name} must not exceed ${maxLength} characters`);
+  return normalized || null;
 }
 
 function nullableTrimmedString(value) {

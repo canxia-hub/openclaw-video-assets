@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { useInspector } from "../lib/inspector";
-import { AssetInspector, ProjectInspector, ShapeInspector } from "./inspectors";
+import { AssetInspector, EdgeInspector, ProjectInspector, ShapeInspector } from "./inspectors";
 import CommandPalette, { usePalette } from "./CommandPalette";
 
 const NAV_ITEMS = [
@@ -33,16 +33,44 @@ export default function AppShell() {
   const clearSelection = useInspector((s) => s.clear);
   const location = useLocation();
   const navigate = useNavigate();
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [navOpen, setNavOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(() =>
+    typeof window === "undefined" || window.matchMedia("(min-width: 768px)").matches,
+  );
 
   const segments = location.pathname.split("/").filter(Boolean);
   const crumbs = segments.map((s) => CRUMB_MAP[s] ?? s);
 
+  useEffect(() => setNavOpen(false), [location.pathname]);
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 768px)");
+    const syncPanels = () => {
+      if (!media.matches) {
+        setNavOpen(false);
+        setInspectorOpen(false);
+      }
+    };
+    syncPanels();
+    media.addEventListener("change", syncPanels);
+    return () => media.removeEventListener("change", syncPanels);
+  }, []);
+
   return (
     <div className="flex h-full bg-bg-base">
       <CommandPalette />
+      {(navOpen || inspectorOpen) && (
+        <button
+          type="button"
+          aria-label="关闭浮层"
+          className="fixed inset-0 z-30 bg-black/60 md:hidden"
+          onClick={() => {
+            setNavOpen(false);
+            setInspectorOpen(false);
+          }}
+        />
+      )}
       {/* 窄侧边栏导航 */}
-      <aside className="flex w-[220px] shrink-0 flex-col border-r border-border-subtle bg-bg-raise1">
+      <aside className={`${navOpen ? "flex" : "hidden"} fixed inset-y-0 left-0 z-40 w-[220px] shrink-0 flex-col border-r border-border-subtle bg-bg-raise1 md:static md:flex`}>
         <div className="flex items-center gap-2 border-b border-border-subtle px-4 py-4">
           <div className="flex h-8 w-8 items-center justify-center rounded-md bg-accent text-sm font-bold text-white">
             资
@@ -51,6 +79,7 @@ export default function AppShell() {
             <div className="text-sm font-semibold text-text-primary">视频资产工作台</div>
             <div className="text-[10px] text-text-faint">video-assets workbench</div>
           </div>
+          <button type="button" onClick={() => setNavOpen(false)} className="ml-auto text-xs text-text-faint md:hidden" aria-label="关闭导航">×</button>
         </div>
         <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
           {NAV_ITEMS.map((item) => (
@@ -71,7 +100,7 @@ export default function AppShell() {
           ))}
         </nav>
         <div className="border-t border-border-subtle p-3 text-[10px] leading-4 text-text-faint">
-          v1.4 · P4 打磨版
+          v1.5 · Workbench 修复版
         </div>
       </aside>
 
@@ -79,11 +108,12 @@ export default function AppShell() {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* 顶栏：面包屑 + 搜索 + 用户 */}
         <header className="flex h-12 shrink-0 items-center gap-4 border-b border-border-subtle bg-bg-raise1 px-4">
-          <nav className="flex items-center gap-1 text-sm text-text-secondary">
+          <button type="button" onClick={() => setNavOpen(true)} className="rounded-md border border-border-subtle px-2 py-1 text-xs text-text-secondary md:hidden" aria-label="打开导航">☰</button>
+          <nav className="flex min-w-0 items-center gap-1 overflow-hidden text-sm text-text-secondary">
             {crumbs.map((c, i) => (
-              <span key={i} className="flex items-center gap-1">
+              <span key={i} className="flex min-w-0 items-center gap-1">
                 {i > 0 && <span className="text-text-faint">/</span>}
-                <span className={i === crumbs.length - 1 ? "text-text-primary" : ""}>{c}</span>
+                <span className={`${i === crumbs.length - 1 ? "text-text-primary" : ""} truncate`}>{c}</span>
               </span>
             ))}
           </nav>
@@ -91,7 +121,7 @@ export default function AppShell() {
           <button
             aria-label="全局搜索"
             onClick={() => usePalette.getState().setOpen(true)}
-            className="flex w-72 items-center justify-between rounded-md border border-border-subtle bg-bg-raise2 px-3 py-1.5 text-xs text-text-faint transition-colors hover:border-border-strong hover:text-text-secondary"
+            className="hidden w-72 items-center justify-between rounded-md border border-border-subtle bg-bg-raise2 px-3 py-1.5 text-xs text-text-faint transition-colors hover:border-border-strong hover:text-text-secondary sm:flex"
           >
             <span>搜索项目、资产、画布…</span>
             <kbd className="rounded border border-border-subtle px-1 text-[10px]">Ctrl K</kbd>
@@ -103,7 +133,7 @@ export default function AppShell() {
           >
             {inspectorOpen ? "隐藏面板" : "显示面板"}
           </button>
-          <span className="text-xs text-text-secondary">{actorId ?? "operator"}</span>
+          <span className="hidden text-xs text-text-secondary lg:inline">{actorId ?? "operator"}</span>
           <button
             onClick={() => void logout().then(() => navigate(0))}
             className="rounded-md border border-border-subtle px-2.5 py-1 text-xs text-text-secondary hover:bg-bg-hover hover:text-text-primary"
@@ -118,17 +148,20 @@ export default function AppShell() {
             <Outlet />
           </main>
           {inspectorOpen && (
-            <aside className="w-[320px] shrink-0 overflow-y-auto border-l border-border-subtle bg-bg-raise1 p-4">
+            <aside className="fixed inset-y-0 right-0 z-40 w-[min(320px,100vw)] shrink-0 overflow-y-auto border-l border-border-subtle bg-bg-raise1 p-4 md:static md:w-[320px]" data-testid="inspector-panel">
               <div className="flex items-center justify-between">
                 <div className="text-xs font-medium tracking-wide text-text-faint">检查器</div>
-                {selection && (
+                <div className="flex items-center gap-2">
+                  {selection && (
                   <button
                     onClick={clearSelection}
                     className="text-[10px] text-text-faint hover:text-text-primary"
                   >
                     清除选择
                   </button>
-                )}
+                  )}
+                  <button onClick={() => setInspectorOpen(false)} className="text-xs text-text-faint hover:text-text-primary md:hidden" aria-label="关闭检查器">×</button>
+                </div>
               </div>
               <div className="mt-3">
                 {!selection && (
@@ -139,6 +172,7 @@ export default function AppShell() {
                 {selection?.kind === "asset" && <AssetInspector key={selection.id} id={selection.id} />}
                 {selection?.kind === "project" && <ProjectInspector key={selection.id} id={selection.id} />}
                 {selection?.kind === "shape" && <ShapeInspector key={selection.id} shape={selection.shape} />}
+                {selection?.kind === "edge" && <EdgeInspector key={selection.id} edge={selection.edge} source={selection.source} target={selection.target} />}
               </div>
             </aside>
           )}
