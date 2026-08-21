@@ -23,6 +23,7 @@
 - [架构与数据模型](#架构与数据模型)
 - [安装](#安装)
 - [配置](#配置)
+- [云端对象存储接入](#云端对象存储接入rclone-挂载厂商中立)
 - [首次启动与安全初始化](#首次启动与安全初始化)
 - [附属技能](#附属技能)
 - [Agent 工具清单](#agent-工具清单)
@@ -293,6 +294,33 @@ openclaw gateway restart
 | `auth.maxLoginAttempts` | number | `5` | 登录窗口内最大失败次数 |
 | `auth.loginWindowMinutes` | number | `10` | 登录限流窗口 |
 | `auth.allowedOrigins` | string[] | `[]` | 公网部署时的浏览器来源白名单 |
+
+---
+
+## 云端对象存储接入（rclone 挂载，厂商中立）
+
+当本机磁盘不足时，可以把占空间的对象库整体迁移到任意 S3 兼容对象存储（腾讯云 COS、阿里 OSS、AWS S3、Cloudflare R2、MinIO 等），插件无需改造：数据库只记录路径，文件经 `fs.createReadStream` 按路径流式读取，路径能通即可。
+
+**分层原则（必须遵守）**
+
+- `asset-repo/objects/`（SHA-256 内容寻址 blob，体积大头）→ 放云端挂载盘。
+- `metadata/video-assets.sqlite`、`cache/`、`project-repo/` → 必须留在本地磁盘。SQLite 放在网络/挂载盘上有锁损坏风险；缓存高频读写，放本地保证 UI 响应。
+
+**接入步骤（以 Windows + rclone 为例）**
+
+1. 安装 WinFsp（v2.1+）与 rclone；`rclone config create <name> s3 provider=<厂商> endpoint=<endpoint> ...` 配好 remote，`rclone lsd <name>:<bucket>` 验证权限。
+2. 磁盘模式挂载：`rclone mount <name>:<bucket> V: --vfs-cache-mode full --vfs-cache-max-size 2G --vfs-cache-max-age 1h --vfs-write-back 5s`。
+   ⚠️ **不要加 `--network-mode`**：网络盘不能做目录联接（Junction）的目标，访问时报“重分析点缓冲区中的数据无效”。
+3. 复制并校验：`rclone copy <repo>/asset-repo/objects V:\objects`。内容寻址对象库校验天然简单——文件名即 SHA-256，抽样 `Get-FileHash` 比对即可。
+4. 切换：本地 `objects` 改名为 `objects.local-backup`（留观察期，不直接删除），再 `New-Item -ItemType Junction -Path <repo>\asset-repo\objects -Target V:\objects`。
+5. 回归验证：经 Junction 读对象 + 哈希比对；插件侧搜索 / 详情 / 派生文件生成 / 新入库写入（新 blob 应自动出现在桶中）。
+6. 保证启动顺序：挂载必须先于 OpenClaw Gateway（可用开机计划任务，SYSTEM 身份、失败重试）。挂载盘是唯一单点依赖，素材突然全部读不到时先查挂载状态。
+
+**其他提示**
+
+- 同地域内网访问通常免流量费（如腾讯云 CVM ↔ 同地域 COS），可用 `nslookup <bucket>.cos.<region>.myqcloud.com` 验证是否返回内网 IP（10.x / 169.254.x）。
+- deep integrity_scan 会全量回源读取云端对象，大库少用；日常用浅扫描。
+- Linux/macOS 同理：rclone mount 到本地路径后，用符号链接替换 `objects` 目录即可（无 Junction 兼容性问题）。
 
 ---
 
@@ -711,6 +739,7 @@ openclaw-video-assets/
 - 媒体探测优先调用 `ffprobe`；缺少 `ffprobe` 时回退到扩展名/MIME 基础识别。
 - KIE/Suno 是第三方网关链路，模型、价格、字段和文件留存期可能变化。
 - Doubao、KIE、Dreamina 的真实生成都依赖外部环境变量、账号状态、CLI 登录态和额度。
+- 对象库在云端挂载盘上时，挂载未就绪会导致素材读写全部失败；需保证挂载先于 Gateway 启动（见「云端对象存储接入」）。
 
 ---
 

@@ -82,7 +82,7 @@
     "properties": {
       "repositoryRoot": {
         "type": "string",
-        "description": "素材与项目仓库根目录，默认使用 ~/.openclaw-video-assets。"
+        "description": "素材与项目仓库根目录，默认使用 ~/.openclaw-video-assets。支持云端对象存储：用 rclone 磁盘模式挂载后将 asset-repo/objects 替换为 Junction/symlink 即可（勿用 --network-mode），metadata 与 cache 须留本地；详见 README「云端对象存储接入」。"
       },
       "allowPhysicalDelete": {
         "type": "boolean",

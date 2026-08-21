@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Vendor-neutral cloud object storage guidance: migrate `asset-repo/objects/` to any S3-compatible bucket (COS/OSS/S3/R2/MinIO) via an rclone disk-mode mount plus a Junction/symlink, with no plugin code changes; `metadata/` and `cache/` must stay local. See README “云端对象存储接入”.
+- `repositoryRoot` config description now documents the cloud-storage wiring and constraints.
+
 ## 1.4.2 - 2026-08-13
 
 ### Fixed

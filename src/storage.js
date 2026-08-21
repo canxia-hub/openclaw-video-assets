@@ -6,6 +6,10 @@ import { pipeline } from "node:stream/promises";
 const SHA256_OBJECT_ID = /^sha256:([a-f0-9]{64})$/;
 
 export function resolveRepositoryRoot(pluginConfig = {}) {
+  // 存储后端对插件透明：本函数只决定根目录路径，对象读写全部走标准 fs。
+  // 若需云端对象存储（COS/OSS/S3/R2/MinIO 等），用 rclone 磁盘模式挂载后
+  // 将 asset-repo/objects 替换为指向挂载盘的 Junction/symlink 即可，无需改代码；
+  // metadata/ 与 cache/ 必须留在本地磁盘。详见 README「云端对象存储接入」。
   const configured = typeof pluginConfig.repositoryRoot === "string" ? pluginConfig.repositoryRoot.trim() : "";
   if (configured) return path.resolve(expandHome(configured));
   const home = process.env.USERPROFILE || process.env.HOME || process.cwd();
@@ -13,6 +17,9 @@ export function resolveRepositoryRoot(pluginConfig = {}) {
 }
 
 const REPOSITORY_DIRS = [
+  // asset-repo/objects 是体积大头（SHA-256 内容寻址 blob），可整体替换为
+  // 指向云端挂载盘的 Junction/symlink；其余目录（尤其 SQLite 所在的 metadata/）
+  // 不要放网络盘，有锁损坏风险。挂载勿用 --network-mode（Junction 会失效）。
   "asset-repo/objects/sha256",
   "asset-repo/staging/uploads",
   "asset-repo/raw",
