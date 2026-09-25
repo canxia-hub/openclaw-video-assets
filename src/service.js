@@ -1,11 +1,17 @@
 import { DatabaseSync } from "node:sqlite";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { CREATE_SCHEMA_SQL } from "./schema.js";
-import { probeMedia } from "./media-probe.js";
+import { resolveUploadPolicy } from "./upload-policy.js";
+import { UploadStore } from "./upload-store.js";
+import { TransferGate } from "./upload-gate.js";
+import { probeMedia, probeMediaAsync } from "./media-probe.js";
 import { ensureRepositoryLayoutSync, getObjectPath, resolveRepositoryRoot, storeObject } from "./storage.js";
+import { DerivationQueue, QueueError, checkStorageAvailability, objectPathForVersion } from "./derivation-queue.js";
+import { DerivationError, cacheDirectoryFor, generateDerivation, planDerivation, resolveMediaTools } from "./media-transcode.js";
 import {
   DOUBAO_AUDIO_GUIDE_SOURCE,
   doubaoAudioNextActions,
@@ -20,12 +26,67 @@ import {
   runKieSunoGeneration,
   validateKieSunoRequest
 } from "./kie-suno-adapter.js";
+import { GENERATION_ENTRY_POLICY, createPersistentBudgetLedger, ledgerBudgetsFromPolicy } from "./generation-policy.js";
+import { ProviderGateway, PROVIDER_IDS, trustedContextOf, withTrustedContext } from "./provider-gateway.js";
+import {
+  canonicalCanvasCommandJson,
+  CanvasCommandIdConflict,
+  CanvasCommandInvalid,
+  CanvasRevisionConflict,
+  describeCanvasCommand,
+  invertCanvasCommand,
+  normalizeCanvasCommand
+} from "./canvas-commands.js";
+import { resolveCanvasEditingPolicy } from "./canvas-editing-policy.js";
+import { GenerationJobQueue } from "./generation-jobs.js";
+import {
+  DREAMINA_IMAGE2IMAGE_MODELS,
+  DREAMINA_IMAGE_DEFAULT_MODEL,
+  DREAMINA_IMAGE_DEFAULT_RATIO,
+  DREAMINA_IMAGE_GENERATION_TYPES,
+  DREAMINA_IMAGE_MAX_GENERATE_NUM,
+  DREAMINA_IMAGE_MAX_INPUT_IMAGES,
+  DREAMINA_IMAGE_MODEL_SPECS,
+  DREAMINA_IMAGE_MODEL_VALUES,
+  DREAMINA_IMAGE_RATIOS,
+  DREAMINA_IMAGE_RESOLUTION_TYPES,
+  DREAMINA_IMAGE_UPSCALE_RESOLUTIONS,
+  DREAMINA_IMAGE2VIDEO_MODELS,
+  DREAMINA_MULTIMODAL2VIDEO_MODELS,
+  DREAMINA_MULTIMODAL_LIMITS_2X,
+  DREAMINA_TEXT2IMAGE_MODELS,
+  DREAMINA_TEXT2VIDEO_MODELS,
+  DREAMINA_VIDEO_MODEL_SPECS,
+  DREAMINA_VIDEO_MODEL_VALUES,
+  DREAMINA_VIDEO_RATIOS,
+  DREAMINA_VIDEO_RESOLUTIONS,
+  describeHistoricalModel,
+  dreaminaImageCliKind,
+  dreaminaModelCatalog
+} from "./capability-registry.js";
+export { dreaminaModelCatalog };
 
 const DEFAULT_ACTOR = "agent:unknown";
 const VIDEO_ASSETS_WIDGET_URI = "ui://widget/video-assets/canvas.html";
 const VIDEO_ASSETS_WORKBENCH_URL = "/__openclaw__/video-assets/workbench/";
 const MAX_STAGING_UPLOAD_BYTES = 100 * 1024 * 1024;
 const ASSET_TITLE_MAX_LENGTH = 512;
+
+/**
+ * Browse paging bounds. The search path trims `limit` to 100; a browse surface needs a larger page and a far
+ * larger offset, because reaching the tail of a big repository is the whole point of paging.
+ */
+const BROWSE_LIMIT_MAX = 200;
+const BROWSE_OFFSET_MAX = 10000000;
+
+/**
+ * Columns a caller may filter on, and the only sort keys allowed to reach SQL.
+ *
+ * Both are whitelists because these values arrive from the client: a filter field is interpolated into the WHERE
+ * clause and a sort key into ORDER BY, so anything not named here must never be concatenated into the statement.
+ */
+const BROWSE_FILTER_FIELDS = Object.freeze(["media_type", "license_status", "risk_level", "kind", "lifecycle", "format_family"]);
+const BROWSE_SORT_COLUMNS = Object.freeze({ updated_at: "updated_at", created_at: "created_at", title: "title", asset_id: "asset_id" });
 const ASSET_DESCRIPTION_MAX_LENGTH = 65536;
 const ASSET_TAG_MAX_ITEMS = 64;
 const ASSET_TAG_MAX_LENGTH = 128;
@@ -48,10 +109,43 @@ const GENERATION_SLOT_REPLACE_POLICIES = new Set(["insert_beside", "replace_slot
 const GENERATION_SLOT_STATUSES = new Set(["empty", "ready", "generating", "filled", "blocked"]);
 const REVISION_CARD_STATUSES = new Set(["open", "in_progress", "resolved", "rejected"]);
 const DEFAULT_DREAMINA_CLI_PATH = path.join(process.env.USERPROFILE ?? process.env.HOME ?? "", "bin", "dreamina.exe");
-const DREAMINA_TEXT2VIDEO_MODELS = new Set(["seedance2.0", "seedance2.0fast", "seedance2.0_vip", "seedance2.0fast_vip", "seedance2.0mini"]);
-const DREAMINA_IMAGE2VIDEO_MODELS = new Set(["3.0", "3.0fast", "3.0pro", "3.0_fast", "3.0_pro", "3.5pro", "3.5_pro", "seedance2.0", "seedance2.0fast", "seedance2.0_vip", "seedance2.0fast_vip", "seedance2.0mini"]);
-const DREAMINA_VIDEO_RATIOS = new Set(["1:1", "3:4", "16:9", "4:3", "9:16", "21:9"]);
-const DREAMINA_VIDEO_RESOLUTIONS = new Set(["720p", "1080p"]);
+// REN-11 fix round (D3): the tool surface submits asynchronously and converges with read-only queries.
+// 0 = `--poll 0` (submit and return the id) - the behaviour that worked on the real machine, where the
+// blocking poll failed with `ret=1015`, empty stdout and an already-charged job.
+const DREAMINA_CLI_ASYNC_POLL_SECONDS = 0;
+const DREAMINA_CLI_QUERY_INTERVAL_MS = 5000;
+const DREAMINA_CLI_MAX_QUERIES = 5;
+// REN-11 fix round (D4): provider media downloads get a bounded attempt with a hard per-attempt timeout.
+const DREAMINA_DOWNLOAD_TIMEOUT_MS = 60000;
+const DREAMINA_DOWNLOAD_ATTEMPTS = 3;
+
+// REN-09：计划接口附带的「模型生命周期只读视图」。
+// 历史参数（含已从规格表移除的裸值 3.0）始终可解释，永不抛错；它不影响新请求校验，
+// 只用于让计划/排障界面能说明「这个 model_version 现在是什么状态」。
+function dreaminaPlanModelLifecycle(generation_type, model_version) {
+  const kind = ["image_to_video", "text_to_video", "multimodal_to_video"].includes(generation_type) ? "video" : "image";
+  const raw = model_version === undefined || model_version === null ? "" : String(model_version).trim();
+  if (!raw) {
+    const effective = kind === "video" ? "seedance2.0fast" : DREAMINA_IMAGE_DEFAULT_MODEL;
+    return {
+      kind,
+      requested: null,
+      effective_default: effective,
+      recognized: true,
+      verified: null,
+      lifecycle: "default",
+      selectable_for_new_request: true,
+      replacement: null,
+      reason: "未显式指定 model_version，使用本插件默认值"
+    };
+  }
+  const described = describeHistoricalModel(kind, raw);
+  return { ...described, effective_default: null };
+}
+// 模型与 Provider 能力规格已迁至唯一真相源 `src/capability-registry.js`（REN-09）：
+// 该文件同时承载 provider 端点/鉴权/计费/超时/授权默认值、模型生命周期（default/candidate/legacy/
+// disabled_new/read_only_history）、官方证据（URL + 核查时间）以及工具 schema enum 的派生入口。
+// 本文件只消费派生视图，不再自行定义模型支持集，避免多处漂移。
 const FILE_ROOTS = Object.freeze({
   "asset-raw": { label: "原始素材", relativePath: "asset-repo/raw", kind: "asset" },
   "asset-working": { label: "工作素材", relativePath: "asset-repo/working", kind: "asset" },
@@ -91,11 +185,37 @@ const DEFAULT_WIDGET_RUNTIME_SUPPORT = Object.freeze({
 });
 
 export class VideoAssetService {
-  constructor({ pluginConfig = {}, logger = console } = {}) {
+  constructor({ pluginConfig = {}, logger = console, providerAdapters = null, budgetLedger = null, generationJobAdapter = null, downloadFetchImpl = null } = {}) {
     this.root = resolveRepositoryRoot(pluginConfig);
+    this.pluginConfig = pluginConfig && typeof pluginConfig === "object" ? pluginConfig : {};
     this.logger = logger;
     this.db = null;
+    this.generationJobAdapter = generationJobAdapter;
+    this.generationJobs = null;
+    // REN-11 fix round (D4): the provider-media downloader's fetch, injectable for the same reason the
+    // job adapter's `fetchImpl` is - a deployment that must survive signed-object stalls can supply its
+    // own retrying implementation (the live run lost a paid download to one hung object and had to build
+    // that out of band). Defaults to the platform fetch.
+    this.downloadFetchImpl = typeof downloadFetchImpl === "function" ? downloadFetchImpl : null;
     this.canvasWidgetRuntimeSupport = { ...DEFAULT_WIDGET_RUNTIME_SUPPORT };
+    // REN-02: every paid provider call goes through this gateway. Adapters are replaceable so the
+    // gate can be proven with zero-cost spies, and so a deployment can point at a different
+    // executable without touching the policy code.
+    this.providerGateway = new ProviderGateway({
+      config: this.pluginConfig.security ?? {},
+      adapters: {
+        [PROVIDER_IDS.DREAMINA_CLI]: ({ argv, timeoutMs }) => runDreaminaCli(argv, { timeoutMs }),
+        [PROVIDER_IDS.DOUBAO_AUDIO]: ({ request, outputDir, apiKey }) => runDoubaoAudioGeneration(request, { outputDir, apiKey }),
+        [PROVIDER_IDS.KIE_SUNO]: ({ request, outputDir, apiKey }) => runKieSunoGeneration(request, { outputDir, apiKey }),
+        ...(providerAdapters ?? {})
+      },
+      ledger: budgetLedger,
+      logger: {
+        warn: (...args) => this.logger?.warn?.(...args),
+        error: (...args) => this.logger?.error?.(...args),
+        info: (...args) => this.logger?.debug?.(...args)
+      }
+    });
   }
 
   init() {
@@ -103,6 +223,32 @@ export class VideoAssetService {
     this.db = new DatabaseSync(path.join(this.root, "metadata", "video-assets.sqlite"));
     runSqlScript(this.db, CREATE_SCHEMA_SQL);
     this.ensureSchemaMigrations();
+    // REN-06: the upload subsystem lives on the service so that every entry point - the streaming route
+    // and the legacy staging helper alike - is bounded by the SAME policy object. A second copy of the
+    // limits would mean two answers to "how big may this be", which is how a bypass appears.
+    this.uploadPolicy = resolveUploadPolicy(this.pluginConfig);
+    this.uploadStore = new UploadStore({ db: this.db, root: this.root, policy: this.uploadPolicy, service: this });
+    this.uploadGate = new TransferGate({
+      concurrency: this.uploadPolicy.maxConcurrentTransfers,
+      maxQueue: this.uploadPolicy.maxQueuedTransfers
+    });
+    this.generationJobs = new GenerationJobQueue({
+      db: this.db,
+      config: this.pluginConfig.generationJobs ?? {},
+      adapter: this.generationJobAdapter,
+      entryPolicy: GENERATION_ENTRY_POLICY
+    });
+    // REN-12 finding F3: with `ledger: "persistent"` the gateway's budget port reads and writes REN-10's
+    // durable `generation_budget_ledger` table - the same rows the queue creates per job. The ledger needs
+    // the database handle, which only exists here, so it is attached after the schema is in place. Until
+    // then the gate stays fail-closed (BUDGET_LEDGER_MISSING), never "budget skipped".
+    const gatewayPolicy = this.providerGateway.policy;
+    if (gatewayPolicy.ledger === "persistent") {
+      this.providerGateway.setLedger(createPersistentBudgetLedger({
+        db: this.db,
+        budgets: ledgerBudgetsFromPolicy(gatewayPolicy)
+      }));
+    }
     return this;
   }
 
@@ -120,6 +266,26 @@ export class VideoAssetService {
     };
   }
 
+  setGenerationJobAdapter(adapter) {
+    this.generationJobAdapter = adapter;
+    this.generationJobs?.setAdapter(adapter);
+    return this;
+  }
+
+  createGenerationJob(input = {}) {
+    this.requireDb();
+    const context = trustedContextOf(input);
+    return this.generationJobs.create({ ...input, surface: context?.surface ?? "gateway" }, context);
+  }
+
+  getGenerationJob(input = {}) { this.requireDb(); return this.generationJobs.getForCaller(input, trustedContextOf(input)); }
+  listGenerationJobs(input = {}) { this.requireDb(); return this.generationJobs.listForCaller(input, trustedContextOf(input)); }
+  generationJobEvents(input = {}) { this.requireDb(); return this.generationJobs.eventsForCaller(input, trustedContextOf(input)); }
+  processGenerationJob(input = {}) { this.requireDb(); return this.generationJobs.process(input.job_id, trustedContextOf(input)); }
+  reconcileGenerationJob(input = {}) { this.requireDb(); return this.generationJobs.reconcile(input.job_id, trustedContextOf(input)); }
+  resumeGenerationJob(input = {}) { this.requireDb(); return this.generationJobs.resume(input.job_id, trustedContextOf(input)); }
+  cancelGenerationJob(input = {}) { this.requireDb(); return this.generationJobs.cancel(input.job_id, trustedContextOf(input)); }
+
   async ingestAsset(input) {
     this.requireDb();
     if (!input?.file_path) throw new Error("file_path is required");
@@ -127,10 +293,10 @@ export class VideoAssetService {
     const description = boundedNullableString(input.description, "description", ASSET_DESCRIPTION_MAX_LENGTH);
     const tags = normalizeStringArray(input.tags ?? [], "tags", { maxItems: ASSET_TAG_MAX_ITEMS, maxLength: ASSET_TAG_MAX_LENGTH });
     const kind = input.kind === "working" ? "working" : "raw";
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const stored = await storeObject(this.root, input.file_path);
-    const probe = probeMedia(input.file_path);
+    const probe = await probeMediaAsync(input.file_path);
     const asset_id = id("asset");
     const asset_version_id = id("ver");
     const branch_id = id("branch");
@@ -165,7 +331,7 @@ export class VideoAssetService {
       throw new Error("change_items is required and must not be empty");
     }
     const asset = this.requireAsset(input.asset_id);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const stored = await storeObject(this.root, input.file_path);
     const probe = probeMedia(input.file_path);
@@ -205,7 +371,7 @@ export class VideoAssetService {
     if (!input?.name) throw new Error("name is required");
     this.requireAsset(input.asset_id);
     this.requireVersionForAsset(input.base_version_id, input.asset_id, "base_version_id");
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const branch_id = id("branch");
     this.db.prepare(`INSERT INTO asset_branches (branch_id, asset_id, name, description, base_version_id, head_version_id, created_by, created_at, updated_at)
@@ -222,7 +388,7 @@ export class VideoAssetService {
     if (!input?.copy_type) throw new Error("copy_type is required");
     const sourceAsset = this.requireAsset(input.source_asset_id, "source_asset_id");
     const sourceVersion = this.requireVersionForAsset(input.source_version_id, input.source_asset_id, "source_version_id");
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const asset_id = id("asset");
     const asset_version_id = id("ver");
@@ -256,7 +422,7 @@ export class VideoAssetService {
     this.requireAsset(input.target_asset_id, "target_asset_id");
     this.requireVersionForAsset(input.source_version_id, input.source_asset_id, "source_version_id");
     if (input.target_version_id) this.requireVersionForAsset(input.target_version_id, input.target_asset_id, "target_version_id");
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const relation_id = input.relation_id ?? id("rel");
     const now = new Date().toISOString();
     this.db.prepare(`INSERT INTO asset_relations (relation_id, relation_type, source_asset_id, source_version_id, target_asset_id, target_version_id, copy_type, reason, created_by, created_at)
@@ -264,6 +430,56 @@ export class VideoAssetService {
       .run(relation_id, input.relation_type, input.source_asset_id, input.source_version_id, input.target_asset_id, input.target_version_id ?? null, input.copy_type ?? null, input.reason ?? null, actor.actor_id, now);
     this.commit({ scope: "asset", target_id: input.target_asset_id, action: "asset.relation.create", message: input.reason ?? `已建立素材关系：${input.source_asset_id} → ${input.target_asset_id}`, actor_id: actor.actor_id, changes: { relation_id, relation_type: input.relation_type, source_asset_id: input.source_asset_id, source_version_id: input.source_version_id, target_version_id: input.target_version_id ?? null } });
     return { relation_id, relation_type: input.relation_type, source_asset_id: input.source_asset_id, source_version_id: input.source_version_id, target_asset_id: input.target_asset_id, target_version_id: input.target_version_id ?? null, copy_type: input.copy_type ?? null, reason: input.reason ?? null, created_by: actor.actor_id, created_at: now };
+  }
+
+  /**
+   * Filter + sort + page + total, for surfaces that must not silently truncate.
+   *
+   * The difference from searchAssets is not cosmetic: this returns a row COUNT and applies every filter in SQL, so
+   * a caller can tell how many rows match and can page through all of them. searchAssets keeps its array shape and
+   * its behaviour, because it backs the frozen `video_asset_read` tool action.
+   */
+  browseAssets(input = {}) {
+    this.requireDb();
+    const limit = clampInteger(input.limit ?? 50, 1, BROWSE_LIMIT_MAX, "limit");
+    const offset = clampInteger(input.offset ?? 0, 0, BROWSE_OFFSET_MAX, "offset");
+    const query = String(input.query ?? "").trim().toLowerCase();
+    const where = ["lifecycle != 'soft_deleted'"];
+    const params = [];
+    if (query) {
+      where.push("(instr(lower(title), ?) > 0 OR instr(lower(COALESCE(description, '')), ?) > 0 OR instr(lower(asset_id), ?) > 0)");
+      params.push(query, query, query);
+    }
+    const filters = {};
+    for (const field of BROWSE_FILTER_FIELDS) {
+      const raw = input[field];
+      if (raw === undefined || raw === null || raw === "") continue;
+      const values = (Array.isArray(raw) ? raw : [raw]).map((value) => String(value)).filter((value) => value !== "");
+      if (values.length === 0) continue;
+      where.push(`${field} IN (${values.map(() => "?").join(", ")})`);
+      params.push(...values);
+      filters[field] = values;
+    }
+    const whereSql = where.join(" AND ");
+    const requestedSort = String(input.sort_by ?? "updated_at");
+    const sortBy = BROWSE_SORT_COLUMNS[requestedSort] ?? BROWSE_SORT_COLUMNS.updated_at;
+    const sortDir = String(input.sort_dir ?? "desc").toLowerCase() === "asc" ? "ASC" : "DESC";
+    const total = this.db.prepare(`SELECT COUNT(*) AS n FROM assets WHERE ${whereSql}`).get(...params).n;
+    // asset_id is always the tiebreaker: without a total order, paging can repeat or skip a row.
+    const rows = this.db
+      .prepare(`SELECT * FROM assets WHERE ${whereSql} ORDER BY ${sortBy} ${sortDir}, asset_id ${sortDir} LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset);
+    return {
+      items: rows.map(assetFromRow),
+      total,
+      limit,
+      offset,
+      returned: rows.length,
+      has_more: offset + rows.length < total,
+      sort: { by: sortBy, dir: sortDir.toLowerCase(), requested_by: requestedSort, applied_default: sortBy !== requestedSort },
+      filters,
+      query: query || null
+    };
   }
 
   searchAssets(input = {}) {
@@ -294,7 +510,7 @@ export class VideoAssetService {
     this.requireDb();
     if (!input.asset_id) throw new Error("asset_id is required");
     const asset = this.requireAsset(input.asset_id);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const updates = {};
 
@@ -339,7 +555,7 @@ export class VideoAssetService {
     this.requireDb();
     if (!input.asset_id) throw new Error("asset_id is required");
     const asset = this.requireAsset(input.asset_id);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const updates = {};
 
@@ -402,10 +618,24 @@ export class VideoAssetService {
     this.requireAsset(input.asset_id);
     this.requireVersionForAsset(input.asset_version_id, input.asset_id, "asset_version_id");
     const derivative_type = this.validateDerivativeType(input.derivative_type);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const stored = await storeObject(this.root, input.file_path);
-    const probe = probeMedia(input.file_path);
+    const probe = await probeMediaAsync(input.file_path);
+    // LAST-MOMENT CHECKPOINT. The caller may have been told this derivation was abandoned while the
+    // artifact was being copied into the object store (an await that a cancel can land inside).
+    // Refusing here - immediately before the single synchronous INSERT - keeps an abandoned
+    // derivation out of the catalog in every case except an abandonment arriving during the INSERT
+    // itself, which nothing short of a shared transaction can close.
+    // The content-addressed blob just stored is deliberately left in place: it is unreferenced, and
+    // deleting a shared content address could remove bytes another row depends on.
+    if (input.lifecycle?.isAbandoned?.() || input.lifecycle?.isCancelled?.()) {
+      throw new DerivationError(
+        "DERIVATION_ABANDONED",
+        "the derivation was abandoned before its row could be recorded; no derived file was registered",
+        { asset_version_id: input.asset_version_id, derivative_type, reason: input.lifecycle.abandonReason?.() ?? "unknown" }
+      );
+    }
     const derived_file_id = id("drv");
     this.db.prepare(`INSERT INTO derived_files (derived_file_id, asset_id, asset_version_id, derivative_type, profile, object_id, file_name, extension, mime_type, container, size_bytes, sha256, width, height, duration_ms, frame_rate, sample_rate, channels, codec, status, metadata_json, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`)
@@ -425,44 +655,195 @@ export class VideoAssetService {
     this.requireAsset(version.asset_id);
 
     const derivative_type = this.validateDerivativeType(input.derivative_type ?? "thumbnail");
-    const source = this.resolveVersionFile(input.asset_version_id);
-    const generation = buildSafeDerivedCopyPlan(this.root, source, version, derivative_type, input);
+    return this.performDerivation({
+      asset_version_id: input.asset_version_id,
+      asset_id: version.asset_id,
+      derivative_type,
+      parameters: input.parameters ?? input,
+      profile_key: input.profile_key ?? null,
+      metadata: input.metadata ?? null,
+      signal: input.signal ?? null,
+      actor_id: this.resolveRequestActor(input).actor_id,
+      actor_type: this.resolveRequestActor(input).actor_type
+    });
+  }
 
-    await fs.promises.mkdir(path.dirname(generation.outputPath), { recursive: true });
-    await fs.promises.copyFile(source.file_path, generation.outputPath);
+  /**
+   * The queue-ready derivation body: storage preflight, real ffmpeg generation, then registration.
+   *
+   * Order matters and is deliberate:
+   *   1. the object store is checked to be REACHABLE before an encoder is started, so a detached
+   *      mount reports as a storage outage rather than as a mysterious failure later;
+   *   2. the source object is checked to EXIST, so a missing file is distinguished from an
+   *      unreachable store;
+   *   3. ffmpeg runs; a failure or a timeout throws and leaves no artifact behind;
+   *   4. only after the artifact is verified does registerDerivedFile copy it into the object store
+   *      and insert a row.
+   * A failure therefore cannot add a version or switch a default: step 4 is never reached.
+   */
+  async performDerivation({ asset_version_id, asset_id, derivative_type, parameters = {}, metadata = null, signal = null, lifecycle = null, actor_id, actor_type }) {
+    this.requireDb();
+    const version = this.getVersionRow(asset_version_id);
+    if (!version) throw new Error(`Asset version not found: ${asset_version_id}`);
+    if (asset_id && asset_id !== version.asset_id) {
+      throw new Error(`Asset version ${asset_version_id} belongs to ${version.asset_id}, not ${asset_id}`);
+    }
+    this.requireAsset(version.asset_id);
+    // A derivation can be submitted without an explicit actor (a queue entry carries whatever the
+    // caller supplied). Falling back to the same default the other service methods use keeps the
+    // audit row attributable instead of throwing on an undefined SQLite bind parameter.
+    const resolvedActor = this.ensureActor(
+      actor_id ?? this.resolveRequestActor({}).actor_id,
+      actor_type ?? this.resolveRequestActor({}).actor_type
+    );
+    // A queue-supplied lifecycle lets this method REFUSE TO COMMIT work whose caller has already
+    // been told the job was abandoned (timed out or cancelled). The abort signal alone is not
+    // sufficient: a child process can ignore an abort, and the run would then still reach the
+    // registration step and write a valid-looking derivation for a failed request.
+    const abortSignal = signal ?? lifecycle?.signal ?? null;
+
+    const storage = await checkStorageAvailability(this.root);
+    if (!storage.ok) {
+      throw new QueueError(storage.code, `the object store is not reachable (${storage.code}), so no derivation can be generated`, storage);
+    }
+
+    const source = this.resolveVersionFile(asset_version_id);
+    const expectedObjectPath = objectPathForVersion(this.root, version.object_id);
+    const sourcePresent = source.file_path === expectedObjectPath ? fs.existsSync(expectedObjectPath) : fs.existsSync(source.file_path);
+    if (!sourcePresent) {
+      throw new DerivationError("DERIVATION_SOURCE_MISSING", "the source object for this version is not present on disk", {
+        asset_version_id,
+        object_id: version.object_id
+      });
+    }
+
+    // Resolve the profile up front so an unsupported (kind, derivative type) pair is refused before
+    // any encoder is spawned.
+    const plan = planDerivation({
+      source: { ...source, asset_version_id },
+      derivativeType: derivative_type,
+      parameters,
+      outputDir: path.join(this.root, cacheDirectoryFor(derivative_type))
+    });
+
+    const generated = await generateDerivation({
+      source: { ...source, asset_version_id },
+      derivativeType: derivative_type,
+      parameters,
+      outputDir: path.dirname(plan.output_path),
+      signal: abortSignal
+    });
+
+    // Checkpoint before the write: an abandoned derivation must not become a row. The artifact is
+    // removed rather than left for a later "the file exists" check to mistake for a real derivative.
+    // (Residual window: an abandonment arriving between this check and the registration call can
+    // still register a row. The window is bounded by one synchronous call and is documented rather
+    // than hidden; closing it fully would need the registration and the abandonment to share one
+    // transaction, which the queue does not own.)
+    if (lifecycle?.isAbandoned?.() || lifecycle?.isCancelled?.() || abortSignal?.aborted === true) {
+      await fs.promises.rm(generated.output_path, { force: true }).catch(() => {});
+      throw new DerivationError(
+        "DERIVATION_ABANDONED",
+        "the derivation was abandoned (timed out or cancelled) before it could be registered; the artifact was discarded and nothing was registered",
+        {
+          asset_version_id,
+          derivative_type,
+          reason: lifecycle?.abandonReason?.() ?? (abortSignal?.aborted ? "signal-aborted" : "unknown")
+        }
+      );
+    }
 
     const derived = await this.registerDerivedFile({
       asset_id: version.asset_id,
-      asset_version_id: input.asset_version_id,
-      file_path: generation.outputPath,
-      derivative_type: generation.derivative_type,
-      profile: input.profile ?? generation.profile,
+      asset_version_id,
+      file_path: generated.output_path,
+      derivative_type: generated.derivative_type,
+      profile: generated.profile,
       metadata: {
         generated_by: "video-assets-plugin",
-        generator: "safe-copy",
-        source_asset_version_id: input.asset_version_id,
+        generator: "ffmpeg",
+        generator_mode: generated.mode,
+        profile_key: generated.profile_key,
+        ffmpeg_version: generated.ffmpeg_version,
+        ffprobe_version: generated.ffprobe_version,
+        source_asset_version_id: asset_version_id,
         source_sha256: source.sha256,
         source_mime_type: source.mime_type,
-        parameters: generation.parameters,
-        ...(input.metadata ?? {})
+        parameters: generated.parameters,
+        verification: generated.verification,
+        source_probe: { media_type: generated.source_probe?.media_type, duration_ms: generated.source_probe?.duration_ms ?? null, width: generated.source_probe?.width ?? null, height: generated.source_probe?.height ?? null, codec: generated.source_probe?.codec ?? null },
+        output_probe: { media_type: generated.output_probe?.media_type, duration_ms: generated.output_probe?.duration_ms ?? null, width: generated.output_probe?.width ?? null, height: generated.output_probe?.height ?? null, codec: generated.output_probe?.codec ?? null },
+        elapsed_ms: generated.elapsed_ms,
+        ...(metadata ?? {})
       },
-      actor_id: input.actor_id,
-      actor_type: input.actor_type
+      lifecycle,
+      actor_id: resolvedActor.actor_id,
+      actor_type: resolvedActor.actor_type
     });
+    // The intermediate artifact has been copied into the content-addressed store; removing the
+    // working copy keeps cache/ from accumulating a second, unstored copy of every derivation.
+    await fs.promises.rm(generated.output_path, { force: true }).catch(() => {});
+
     this.commit({
       scope: "asset",
       target_id: version.asset_id,
       action: "asset.derived.generate",
-      message: `已生成衍生文件：${generation.derivative_type}`,
-      actor_id: input.actor_id ?? DEFAULT_ACTOR,
+      message: `已生成衍生文件：${generated.derivative_type}`,
+      actor_id: resolvedActor.actor_id,
       changes: {
         derived_file_id: derived.derived_file_id,
-        asset_version_id: input.asset_version_id,
-        derivative_type: generation.derivative_type,
-        profile: derived.profile
+        asset_version_id,
+        derivative_type: generated.derivative_type,
+        profile: derived.profile,
+        generator: "ffmpeg"
       }
     });
     return derived;
+  }
+
+  /**
+   * The shared bounded derivation queue. Created on first use so a short-lived service instance
+   * never pays for it; the same instance is reused for the process lifetime, which is what makes
+   * de-duplication and the completion cache effective.
+   */
+  derivationQueue(options = {}) {
+    if (!this._derivationQueue) {
+      this._derivationQueue = new DerivationQueue({ service: this, ...options });
+    }
+    return this._derivationQueue;
+  }
+
+  /** Submit a derivation through the bounded queue. Returns the task handle from the queue. */
+  enqueueDerivation(input = {}) {
+    const queue = this.derivationQueue(input.queue_options ?? {});
+    const parameters = input.parameters ?? {};
+    const version = this.getVersionRow(input.asset_version_id);
+    if (!version) throw new Error(`Asset version not found: ${input.asset_version_id}`);
+    const source = this.resolveVersionFile(input.asset_version_id);
+    const derivative_type = this.validateDerivativeType(input.derivative_type ?? "thumbnail");
+    // The profile is part of the de-duplication key, so two requests that differ only in width are
+    // two jobs while a repeated identical request is one.
+    const plan = planDerivation({ source: { ...source, asset_version_id: input.asset_version_id }, derivativeType: derivative_type, parameters, outputDir: this.root });
+    return queue.submit({
+      asset_version_id: input.asset_version_id,
+      asset_id: version.asset_id,
+      derivative_type,
+      parameters,
+      profile_key: plan.profileKey,
+      actor_id: this.resolveRequestActor(input).actor_id,
+      actor_type: this.resolveRequestActor(input).actor_type
+    });
+  }
+
+  /** Which derivations this build can actually produce, and which toolchain backs them. */
+  async derivationCapabilities() {
+    const tools = await resolveMediaTools();
+    return {
+      toolchain: { ffmpeg: tools.ffmpeg, ffprobe: tools.ffprobe, ffmpeg_version: tools.ffmpeg_version, ffprobe_version: tools.ffprobe_version, available: tools.available },
+      generator: "ffmpeg",
+      fallback_generator: null,
+      note: "A derivation is never satisfied by copying the source. When the toolchain is unavailable or a (kind, derivative type) pair has no profile, generation fails with a coded error."
+    };
   }
 
   listDerivedFiles(input = {}) {
@@ -603,7 +984,7 @@ export class VideoAssetService {
   createProject(input) {
     this.requireDb();
     if (!input?.title) throw new Error("title is required");
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const project_id = id("project");
     this.db.prepare(`INSERT INTO projects (project_id, title, status, description, target_platforms_json, aspect_ratio, resolution, fps, owner_actor_id, created_by, created_at, updated_at)
@@ -617,7 +998,7 @@ export class VideoAssetService {
     this.requireDb();
     if (!input.project_id) throw new Error("project_id is required");
     const existing = this.requireProject(input.project_id);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const target_platforms = input.target_platforms === undefined ? existing.target_platforms : normalizeTargetPlatforms(input.target_platforms);
     const aspect_ratio = input.aspect_ratio === undefined ? existing.aspect_ratio : normalizeAspectRatio(input.aspect_ratio);
     const resolution = input.resolution === undefined ? existing.resolution : normalizeResolution(input.resolution);
@@ -642,7 +1023,7 @@ export class VideoAssetService {
   addProjectRef(input) {
     this.requireDb();
     if (!input?.project_id || !input?.asset_id) throw new Error("project_id and asset_id are required");
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     this.requireProject(input.project_id);
     const asset = this.requireAsset(input.asset_id);
     const asset_version_id = input.asset_version_id ?? asset.default_version_id;
@@ -664,7 +1045,7 @@ export class VideoAssetService {
     if (!input?.reference_id) throw new Error("reference_id is required");
     const existing = this.requireProjectRef(input.reference_id);
     if (existing.status === "removed") throw new Error(`Project reference is removed: ${input.reference_id}`);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const asset_id = input.asset_id ?? existing.asset_id;
     const asset = this.requireAsset(asset_id);
     const asset_version_id = input.asset_version_id ?? (input.asset_id && input.asset_id !== existing.asset_id ? asset.default_version_id : existing.asset_version_id);
@@ -684,7 +1065,7 @@ export class VideoAssetService {
     if (!input?.reference_id) throw new Error("reference_id is required");
     const existing = this.requireProjectRef(input.reference_id);
     if (existing.status === "removed") return { reference_id: input.reference_id, status: "removed" };
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     this.db.prepare("UPDATE project_references SET status = 'removed', removed_at = ?, removed_by = ?, updated_at = ? WHERE reference_id = ?")
       .run(now, actor.actor_id, now, input.reference_id);
@@ -761,7 +1142,7 @@ export class VideoAssetService {
     this.requireDb();
     if (!input.project_id) throw new Error("project_id is required");
     const project = this.requireProject(input.project_id);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const canvas_id = id("canvas");
     const title = input.title || `${project.title} 画布`;
@@ -779,7 +1160,7 @@ export class VideoAssetService {
     const project_id = input.project_id ?? canvas?.project_id;
     if (!project_id) throw new Error("project_id or canvas_id is required");
     const project = this.requireProject(project_id);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const detail = canvas
       ? this.getCanvas({ canvas_id: canvas.canvas_id })
       : this.createCanvas({
@@ -995,7 +1376,7 @@ export class VideoAssetService {
     const shapes = this.db.prepare("SELECT * FROM canvas_shapes WHERE canvas_id = ? ORDER BY z_index ASC, created_at ASC").all(input.canvas_id).map(canvasShapeFromRow);
     const edges = this.db.prepare("SELECT * FROM canvas_edges WHERE canvas_id = ? ORDER BY created_at ASC").all(input.canvas_id).map(canvasEdgeFromRow);
     const snapshots = this.db.prepare("SELECT snapshot_id, canvas_id, created_by, created_at FROM canvas_snapshots WHERE canvas_id = ? ORDER BY created_at DESC LIMIT 5").all(input.canvas_id);
-    return { ...this.canvasSummary(row), viewport: JSON.parse(row.viewport_json || "{}"), document: JSON.parse(row.document_json || "{}"), shapes, edges, snapshots };
+    return { ...this.canvasSummary(row), revision: Number(row.revision ?? 0), viewport: JSON.parse(row.viewport_json || "{}"), document: JSON.parse(row.document_json || "{}"), shapes, edges, snapshots, editing: this.canvasEditingPolicy() };
   }
 
   createGenerationSlot(input = {}) {
@@ -1030,8 +1411,8 @@ export class VideoAssetService {
         role: "generation_slot",
         source: input.source ?? "video_canvas_create_generation_slot"
       },
-      actor_id: input.actor_id,
-      actor_type: input.actor_type
+      actor_id: this.resolveRequestActor(input).actor_id,
+      actor_type: this.resolveRequestActor(input).actor_type
     });
     return this.generationSlotDetail(shape);
   }
@@ -1064,8 +1445,8 @@ export class VideoAssetService {
         role: "generation_slot",
         source: input.source ?? existingProps.source ?? "video_canvas_update_generation_slot"
       },
-      actor_id: input.actor_id,
-      actor_type: input.actor_type
+      actor_id: this.resolveRequestActor(input).actor_id,
+      actor_type: this.resolveRequestActor(input).actor_type
     });
     return this.generationSlotDetail(shape);
   }
@@ -1082,7 +1463,17 @@ export class VideoAssetService {
     if (input.expected_updated_at !== undefined && input.expected_updated_at !== canvas.updated_at) {
       throw new Error(`canvas snapshot version conflict: expected_updated_at ${input.expected_updated_at} does not match ${canvas.updated_at}`);
     }
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    // REN-08: the same optimistic lock expressed in the revision the command protocol uses. Both are accepted -
+    // existing callers pass a timestamp and must keep working - but a caller that knows the revision gets the same
+    // atomic guarantee as canvas.applyCommand, including the 409 status a UI can act on.
+    const expectedRevision = input.expected_revision ?? input.expected_version;
+    if (expectedRevision !== undefined && expectedRevision !== null) {
+      const current = this.canvasRevisionOf(input.canvas_id).revision;
+      if (Number(expectedRevision) !== current) {
+        throw new CanvasRevisionConflict(input.canvas_id, Number(expectedRevision), current, { commandType: "save_snapshot" });
+      }
+    }
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const snapshot_id = id("snap");
     const state = input.state && typeof input.state === "object" ? input.state : {};
@@ -1097,7 +1488,7 @@ export class VideoAssetService {
       : previousDocument;
     this.db.prepare("INSERT INTO canvas_snapshots (snapshot_id, canvas_id, state_json, created_by, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(snapshot_id, input.canvas_id, JSON.stringify(state), actor.actor_id, now);
-    this.db.prepare("UPDATE canvases SET viewport_json = ?, document_json = ?, updated_at = ? WHERE canvas_id = ?")
+    this.db.prepare("UPDATE canvases SET viewport_json = ?, document_json = ?, revision = revision + 1, updated_at = ? WHERE canvas_id = ?")
       .run(JSON.stringify(viewport), JSON.stringify(document), now, input.canvas_id);
     this.commit({
       scope: "project",
@@ -1310,11 +1701,19 @@ export class VideoAssetService {
       .run(JSON.stringify(document), now, canvas_id);
   }
 
-  upsertCanvasShape(input = {}) {
+  /**
+   * Write one canvas card.
+   *
+   * `context` is not part of the tool surface - it is how the REN-08 command path reuses this writer without
+   * double-counting. The command envelope has already claimed the revision atomically, so an inner unconditional
+   * bump would make one user action advance the revision twice and record two audit entries; `deferRevisionBump`
+   * and `deferCommit` let the command own both.
+   */
+  upsertCanvasShape(input = {}, context = {}) {
     this.requireDb();
     if (!input.canvas_id) throw new Error("canvas_id is required");
     const canvas = this.requireCanvas(input.canvas_id);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const shape_type = this.validateCanvasShapeType(input.shape_type ?? "note");
     const subject_type = this.validateCanvasSubjectType(input.subject_type ?? subjectTypeForShape(shape_type));
     if (input.subject_id) this.requireCanvasSubject(subject_type, input.subject_id);
@@ -1337,27 +1736,31 @@ export class VideoAssetService {
       this.db.prepare(`INSERT INTO canvas_shapes (shape_id, canvas_id, shape_type, subject_type, subject_id, title, x, y, width, height, rotation, z_index, props_json, created_by, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(shape_id, input.canvas_id, shape_type, subject_type, input.subject_id ?? null, title ?? null, x, y, width, height, rotation, z_index, JSON.stringify(props), actor.actor_id, now, now);
     }
-    this.touchCanvas(input.canvas_id, now);
-    this.commit({ scope: "project", target_id: canvas.project_id, action: existing ? "canvas.shape.update" : "canvas.shape.create", message: `${existing ? "已更新" : "已创建"}画布卡片：${shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: input.canvas_id, shape_id, subject_type, subject_id: input.subject_id ?? existing?.subject_id ?? null } });
+    if (context.deferRevisionBump !== true) this.touchCanvas(input.canvas_id, now);
+    if (context.deferCommit !== true) {
+      this.commit({ scope: "project", target_id: canvas.project_id, action: existing ? "canvas.shape.update" : "canvas.shape.create", message: `${existing ? "已更新" : "已创建"}画布卡片：${shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: input.canvas_id, shape_id, subject_type, subject_id: input.subject_id ?? existing?.subject_id ?? null } });
+    }
     return canvasShapeFromRow(this.getCanvasShapeRow(shape_id));
   }
 
-  deleteCanvasShape(input = {}) {
+  deleteCanvasShape(input = {}, context = {}) {
     this.requireDb();
     if (!input.shape_id) throw new Error("shape_id is required");
     const shape = this.requireCanvasShape(input.shape_id);
     const canvas = this.requireCanvas(shape.canvas_id);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const removedEdges = this.db.prepare("SELECT COUNT(*) AS count FROM canvas_edges WHERE source_shape_id = ? OR target_shape_id = ?").get(input.shape_id, input.shape_id);
     this.db.prepare("DELETE FROM canvas_edges WHERE source_shape_id = ? OR target_shape_id = ?").run(input.shape_id, input.shape_id);
     this.db.prepare("DELETE FROM canvas_shapes WHERE shape_id = ?").run(input.shape_id);
-    this.touchCanvas(shape.canvas_id, now);
-    this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.shape.delete", message: `已删除画布卡片：${input.shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: shape.canvas_id, shape_id: input.shape_id, removed_edges: Number(removedEdges?.count ?? 0) } });
+    if (context.deferRevisionBump !== true) this.touchCanvas(shape.canvas_id, now);
+    if (context.deferCommit !== true) {
+      this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.shape.delete", message: `已删除画布卡片：${input.shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: shape.canvas_id, shape_id: input.shape_id, removed_edges: Number(removedEdges?.count ?? 0) } });
+    }
     return { shape_id: input.shape_id, deleted: true, removed_edges: Number(removedEdges?.count ?? 0) };
   }
 
-  linkCanvasShapes(input = {}) {
+  linkCanvasShapes(input = {}, context = {}) {
     this.requireDb();
     if (!input.canvas_id || !input.source_shape_id || !input.target_shape_id) throw new Error("canvas_id, source_shape_id, and target_shape_id are required");
     const canvas = this.requireCanvas(input.canvas_id);
@@ -1365,7 +1768,7 @@ export class VideoAssetService {
     const target = this.requireCanvasShape(input.target_shape_id);
     if (source.canvas_id !== input.canvas_id || target.canvas_id !== input.canvas_id) throw new Error("source and target shapes must belong to the canvas");
     const relation_type = this.validateCanvasRelationType(input.relation_type ?? "related_to");
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const edge_id = input.edge_id || id("edge");
     const props = input.props && typeof input.props === "object" ? input.props : {};
@@ -1373,22 +1776,26 @@ export class VideoAssetService {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(edge_id) DO UPDATE SET source_shape_id = excluded.source_shape_id, target_shape_id = excluded.target_shape_id, relation_type = excluded.relation_type, label = excluded.label, props_json = excluded.props_json, updated_at = excluded.updated_at`)
       .run(edge_id, input.canvas_id, input.source_shape_id, input.target_shape_id, relation_type, input.label ?? null, JSON.stringify(props), actor.actor_id, now, now);
-    this.touchCanvas(input.canvas_id, now);
-    this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.edge.link", message: `已连接画布卡片：${input.source_shape_id} → ${input.target_shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: input.canvas_id, edge_id, relation_type } });
+    if (context.deferRevisionBump !== true) this.touchCanvas(input.canvas_id, now);
+    if (context.deferCommit !== true) {
+      this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.edge.link", message: `已连接画布卡片：${input.source_shape_id} → ${input.target_shape_id}`, actor_id: actor.actor_id, changes: { canvas_id: input.canvas_id, edge_id, relation_type } });
+    }
     return canvasEdgeFromRow(this.db.prepare("SELECT * FROM canvas_edges WHERE edge_id = ?").get(edge_id));
   }
 
-  unlinkCanvasShapes(input = {}) {
+  unlinkCanvasShapes(input = {}, context = {}) {
     this.requireDb();
     if (!input.edge_id) throw new Error("edge_id is required");
     const edge = this.db.prepare("SELECT * FROM canvas_edges WHERE edge_id = ?").get(input.edge_id);
     if (!edge) return { edge_id: input.edge_id, deleted: false };
     const canvas = this.requireCanvas(edge.canvas_id);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     this.db.prepare("DELETE FROM canvas_edges WHERE edge_id = ?").run(input.edge_id);
-    this.touchCanvas(edge.canvas_id, now);
-    this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.edge.unlink", message: `已解除画布连线：${input.edge_id}`, actor_id: actor.actor_id, changes: { canvas_id: edge.canvas_id, edge_id: input.edge_id } });
+    if (context.deferRevisionBump !== true) this.touchCanvas(edge.canvas_id, now);
+    if (context.deferCommit !== true) {
+      this.commit({ scope: "project", target_id: canvas.project_id, action: "canvas.edge.unlink", message: `已解除画布连线：${input.edge_id}`, actor_id: actor.actor_id, changes: { canvas_id: edge.canvas_id, edge_id: input.edge_id } });
+    }
     return { edge_id: input.edge_id, deleted: true };
   }
 
@@ -1531,7 +1938,12 @@ export class VideoAssetService {
         derived_files: item.derived_files
       };
     });
-    const parameters = generationTaskParameters(generationPackage, outputSpec);
+    const parameters = {
+      ...generationTaskParameters(generationPackage, outputSpec),
+      model_version: input.model_version ?? null,
+      resolution_type: input.resolution_type ?? null,
+      generate_num: input.generate_num ?? null
+    };
     const dreaminaCli = dreaminaCliHandoff({
       generation_type: generationPackage.generation_type,
       outputSpec,
@@ -1578,6 +1990,25 @@ export class VideoAssetService {
     };
   }
 
+  /**
+   * REN-09 · 只读能力查询：**永不抛错**，也不产生任何副作用（零成本）。
+   * 用途：解释历史产出中出现的 model_version（含已从规格表移除的裸值 3.0），
+   * 让 UI / 文档 / 排障界面在不触发新请求校验的前提下展示生命周期与替代建议。
+   */
+  describeModelLifecycle(input = {}) {
+    const requestedKind = input.kind === "image" || input.kind === "video" ? input.kind : null;
+    const kind = requestedKind ?? (["image", "cover", "edit"].includes(input.generation_type) ? "image" : "video");
+    const generation_type = input.generation_type ?? (kind === "image" ? "image" : "image_to_video");
+    const view = kind === "image" ? dreaminaPlanModelLifecycle("image", input.model_version) : dreaminaPlanModelLifecycle(generation_type, input.model_version);
+    return {
+      version: 1,
+      source: "capability_registry_readonly",
+      created_at: new Date().toISOString(),
+      ...view,
+      kind
+    };
+  }
+
   canvasDreaminaCliPlan(input = {}) {
     const handoff = this.canvasGenerationHandoff(input);
     const guide = dreaminaCliUsageGuide();
@@ -1593,6 +2024,7 @@ export class VideoAssetService {
       project: handoff.package.project,
       generation_type: handoff.package.generation_type,
       recommended_provider: "dreamina_cli",
+      model_lifecycle: dreaminaPlanModelLifecycle(handoff.package.generation_type, input.model_version),
       zero_cost_checks: guide.zero_cost_checks,
       cost_policy: guide.cost_policy,
       preflight,
@@ -1614,7 +2046,14 @@ export class VideoAssetService {
     if (!["image_to_video", "text_to_video", "multimodal_to_video"].includes(generation_type)) {
       throw new Error("即梦视频生成工具只支持图生视频、文生视频或多模态视频。");
     }
-    const handoff = this.canvasGenerationHandoff({ canvas_id: input.canvas_id, generation_type });
+    // model_version 必须随 handoff 下沉：handoff 内的多模态输入上限按模型规格表校验，
+    // 漏传会回退成 seedance2.0fast 的更严上限（video<=3），误判 seedance2.5（video<=10）的合法输入。
+    // 来源：2026-09-20 回归用例 handoff-model-version-test。
+    const handoff = this.canvasGenerationHandoff({
+      canvas_id: input.canvas_id,
+      generation_type,
+      model_version: input.model_version ?? null
+    });
     const guide = dreaminaCliUsageGuide();
     const videoConfig = dreaminaVideoConfig({
       generation_type,
@@ -1670,18 +2109,29 @@ export class VideoAssetService {
         "此工具只执行视频生成，不执行图像生成命令。",
         "真实执行前必须明确接受积分消耗。",
         "除非显式关闭预检，否则真实生成前会先检查即梦账户余额。",
-        "如果任务返回查询中，请保存提交编号，后续查询结果，不要重复提交。"
+        "默认异步提交（--poll 0）：受理后只用只读 query_result 收敛；未收敛时保留提交编号并转只读对账，任何情况下都不会自动重提（重提会二次计费）。"
       ]
     };
 
     if (blockers.length || !execute) return base;
+    const authorization = this.beginGeneration({ entry: "dreamina.video.generate", input });
+    if (!authorization.allowed) return this.blockedGeneration(base, authorization, "dreamina.video.generate");
     if (input.accept_credit_spend !== true) throw new Error("真实执行即梦视频生成前必须明确接受积分消耗。");
 
     await fs.promises.mkdir(outputDir, { recursive: true });
-    const creditBefore = runPreflight ? await runDreaminaCli(["user_credit"], { timeoutMs: 90000 }) : null;
-    const generation = await runDreaminaCli(command.command.argv.slice(1), { timeoutMs });
-    const parsed = parseDreaminaJson(generation.stdout);
-    const creditAfter = runPreflight ? await runDreaminaCli(["user_credit"], { timeoutMs: 90000 }) : null;
+    const creditBefore = runPreflight ? await this.dreaminaCreditProbe({ authorization }) : null;
+    const submitted = await this.submitDreaminaCliGeneration({
+      authorization,
+      argv: command.command.argv.slice(1),
+      timeoutMs,
+      command_kind: command.command.kind,
+      converge: input.converge !== false,
+      maxQueries: input.max_queries,
+      intervalMs: input.converge_interval_ms
+    });
+    const parsed = submitted.parsed;
+    const creditAfter = runPreflight ? await this.dreaminaCreditProbe({ authorization, after: true }) : null;
+    this.finishGeneration(authorization, "provider-calls-complete");
     const videos = extractDreaminaVideos(parsed);
     const downloads = [];
     const registered_assets = [];
@@ -1691,7 +2141,7 @@ export class VideoAssetService {
       for (let index = 0; index < videos.length; index += 1) {
         const item = videos[index];
         const target = path.join(outputDir, dreaminaVideoDownloadName({ submit_id: parsed.submit_id, index, url: item.url }));
-        await downloadUrl(item.url, target);
+        await downloadUrl(item.url, target, { timeoutMs: input.download_timeout_ms, attempts: input.download_attempts, fetchImpl: this.downloadFetchImpl });
         downloads.push({ ...item, file_path: target });
       }
     }
@@ -1704,8 +2154,8 @@ export class VideoAssetService {
           description: "由即梦命令行根据视频资产画布生成。",
           tags: ["dreamina_cli", generation_type, videoConfig.model_version],
           kind: "working",
-          actor_id: input.actor_id ?? DEFAULT_ACTOR,
-          actor_type: input.actor_type ?? "agent",
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type,
           source: {
             source_type: "dreamina_cli",
             notes: JSON.stringify({
@@ -1720,14 +2170,14 @@ export class VideoAssetService {
         });
         this.updateAssetRights({
           asset_id: asset.asset_id,
-          license_status: input.license_status ?? "cleared",
-          risk_level: input.risk_level ?? "low",
-          actor_id: input.actor_id ?? DEFAULT_ACTOR,
-          actor_type: input.actor_type ?? "agent",
+          license_status: input.license_status ?? "unknown",
+          risk_level: input.risk_level ?? "unknown",
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type,
           source: {
             source_type: "dreamina_cli",
             captured_at: new Date().toISOString(),
-            license_hint: "由已登录的即梦命令行账号生成；公开发布前仍需复核项目用途与授权边界。",
+            license_hint: "由已登录的即梦命令行账号生成；缺可引用授权依据，默认记为 unknown，公开发布前必须完成清权。",
             notes: JSON.stringify({
               submit_id: parsed.submit_id ?? null,
               command: command.command.shell,
@@ -1746,8 +2196,8 @@ export class VideoAssetService {
         generation_type,
         assets: registered_assets,
         submit_id: parsed.submit_id,
-        actor_id: input.actor_id ?? DEFAULT_ACTOR,
-        actor_type: input.actor_type ?? "agent"
+        actor_id: this.resolveRequestActor(input).actor_id,
+        actor_type: this.resolveRequestActor(input).actor_type
       });
     }
 
@@ -1755,16 +2205,436 @@ export class VideoAssetService {
       ...base,
       status: parsed?.gen_status === "success" ? "success" : (parsed?.gen_status ?? "submitted"),
       dry_run: false,
-      credit_before: creditBefore ? parseDreaminaJson(creditBefore.stdout) : null,
+      credit_before: creditBefore,
       cli_result: parsed,
-      raw_stdout: generation.stdout,
-      raw_stderr: generation.stderr,
-      credit_after: creditAfter ? parseDreaminaJson(creditAfter.stdout) : null,
+      raw_stdout: submitted.stdout,
+      raw_stderr: submitted.stderr,
+      credit_after: creditAfter,
+      submission: submitted.submission,
+      convergence: submitted.convergence,
       downloads,
       registered_assets,
       canvas_writeback,
-      next_actions: dreaminaCliGenerationNextActions({ parsed, downloads, registered_assets, outputDir })
+      next_actions: dreaminaCliGenerationNextActions({ parsed, downloads, registered_assets, outputDir, submission: submitted.submission })
     };
+  }
+
+  async canvasDreaminaCliGenerateImage(input = {}) {
+    this.requireDb();
+    const generation_type = input.generation_type ?? "image";
+    if (!DREAMINA_IMAGE_GENERATION_TYPES.includes(generation_type)) {
+      throw new Error("即梦图像生成工具只支持 image、cover 或 edit 生成型。");
+    }
+    if (input.ratio !== undefined && input.ratio !== null && input.ratio !== "" && !DREAMINA_IMAGE_RATIOS.includes(String(input.ratio).trim())) {
+      throw new Error(`ratio must be one of: ${DREAMINA_IMAGE_RATIOS.join(", ")}`);
+    }
+    const handoff = this.canvasGenerationHandoff({
+      canvas_id: input.canvas_id,
+      generation_type,
+      model_version: input.model_version ?? null,
+      resolution_type: input.resolution_type ?? null,
+      generate_num: input.generate_num ?? null
+    });
+    const guide = dreaminaCliUsageGuide();
+    const imageConfig = dreaminaImageConfig({
+      generation_type,
+      outputSpec: handoff.task.target,
+      model_version: input.model_version ?? null,
+      resolution_type: input.resolution_type ?? null,
+      generate_num: input.generate_num ?? null,
+      ratio: input.ratio ?? handoff.task.target?.aspect_ratio ?? null,
+      width: input.width ?? null,
+      height: input.height ?? null,
+      poll: input.poll
+    });
+    const command = dreaminaImageCommandFromHandoff({
+      handoff,
+      generation_type,
+      prompt: input.prompt,
+      imageConfig
+    });
+    const execute = input.execute === true || input.accept_credit_spend === true;
+    const outputDir = resolveDreaminaImageOutputDir(input.output_dir, this.root);
+    const runPreflight = input.run_preflight !== false;
+    const ingestOutputs = input.ingest_outputs !== false;
+    const writebackCanvas = input.writeback_canvas !== false;
+    const timeoutMs = clampInteger(input.timeout_ms ?? Math.max(120000, (imageConfig.poll + 90) * 1000), 30000, 900000, "timeout_ms");
+    const blockers = [
+      ...(handoff.status === "ready" ? [] : ["canvas generation handoff is not ready"]),
+      ...(handoff.validation.generation_gate_blockers ?? []),
+      ...(handoff.validation.dreamina_cli_blockers ?? []),
+      ...(command.blockers ?? [])
+    ];
+
+    const base = {
+      version: 1,
+      source: "canvas_dreamina_cli_image_generation",
+      created_at: new Date().toISOString(),
+      guide_source: guide.source,
+      status: blockers.length ? "blocked" : (execute ? "pending_execution" : "ready"),
+      canvas: handoff.package.canvas,
+      project: handoff.package.project,
+      generation_type,
+      provider: "dreamina_cli",
+      safety: {
+        image_only: true,
+        accepts_credit_spend: input.accept_credit_spend === true,
+        execute,
+        dry_run: !execute
+      },
+      parameters: imageConfig,
+      preflight: [{ name: "user_credit", argv: [DEFAULT_DREAMINA_CLI_PATH || "dreamina", "user_credit"], required: true }],
+      command: blockers.length ? null : command.command,
+      reference_inputs: command.reference_inputs ?? null,
+      output_dir: outputDir,
+      blockers,
+      cost_policy: [
+        "此工具只执行图像生成，不执行视频生成命令。",
+        "真实执行前必须明确接受积分消耗。",
+        "除非显式关闭预检，否则真实生成前会先检查即梦账户余额。",
+        "默认异步提交（--poll 0）：受理后只用只读 query_result 收敛；未收敛时保留提交编号并转只读对账，任何情况下都不会自动重提（重提会二次计费）。",
+        "5.0Pro 为 CLI 原值命名；resolution_type 必须落在该模型允许的档位（1.5k/2k/4k）。"
+      ]
+    };
+
+    if (blockers.length || !execute) return base;
+    const authorization = this.beginGeneration({ entry: "dreamina.image.generate", input });
+    if (!authorization.allowed) return this.blockedGeneration(base, authorization, "dreamina.image.generate");
+    if (input.accept_credit_spend !== true) throw new Error("真实执行即梦图像生成前必须明确接受积分消耗。");
+
+    await fs.promises.mkdir(outputDir, { recursive: true });
+    const creditBefore = runPreflight ? await this.dreaminaCreditProbe({ authorization }) : null;
+    const submitted = await this.submitDreaminaCliGeneration({
+      authorization,
+      argv: command.command.argv.slice(1),
+      timeoutMs,
+      command_kind: command.command.kind,
+      converge: input.converge !== false,
+      maxQueries: input.max_queries,
+      intervalMs: input.converge_interval_ms
+    });
+    const parsed = submitted.parsed;
+    const creditAfter = runPreflight ? await this.dreaminaCreditProbe({ authorization, after: true }) : null;
+    this.finishGeneration(authorization, "provider-calls-complete");
+    const images = extractDreaminaImages(parsed);
+    const downloads = [];
+    const registered_assets = [];
+    let canvas_writeback = null;
+
+    if (parsed?.gen_status === "success" && images.length && (input.download_outputs !== false)) {
+      for (let index = 0; index < images.length; index += 1) {
+        const item = images[index];
+        const target = path.join(outputDir, dreaminaImageDownloadName({ submit_id: parsed.submit_id, index, url: item.url }));
+        await downloadUrl(item.url, target, { timeoutMs: input.download_timeout_ms, attempts: input.download_attempts, fetchImpl: this.downloadFetchImpl });
+        downloads.push({ ...item, file_path: target });
+      }
+    }
+
+    if (downloads.length && ingestOutputs) {
+      for (const download of downloads) {
+        const asset = await this.ingestAsset({
+          file_path: download.file_path,
+          title: input.output_title ?? `即梦图像输出 ${parsed.submit_id ?? "未命名"}`,
+          description: "由即梦命令行根据视频资产画布生成。",
+          tags: ["dreamina_cli", generation_type, imageConfig.model_version, imageConfig.resolution_type],
+          kind: "working",
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type,
+          source: {
+            source_type: "dreamina_cli",
+            notes: JSON.stringify({
+              submit_id: parsed.submit_id ?? null,
+              generation_type,
+              model_version: imageConfig.model_version,
+              resolution_type: imageConfig.resolution_type,
+              ratio: imageConfig.ratio,
+              generate_num: imageConfig.generate_num,
+              prompt: command.prompt
+            })
+          }
+        });
+        this.updateAssetRights({
+          asset_id: asset.asset_id,
+          license_status: input.license_status ?? "unknown",
+          risk_level: input.risk_level ?? "unknown",
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type,
+          source: {
+            source_type: "dreamina_cli",
+            captured_at: new Date().toISOString(),
+            license_hint: "由已登录的即梦命令行账号生成；缺可引用授权依据，默认记为 unknown，公开发布前必须完成清权。",
+            notes: JSON.stringify({
+              submit_id: parsed.submit_id ?? null,
+              command: command.command.shell,
+              credit_count: parsed?.credit_count ?? null
+            })
+          }
+        });
+        registered_assets.push({ asset_id: asset.asset_id, asset_version_id: asset.default_version_id, file_path: download.file_path });
+      }
+    }
+
+    if (registered_assets.length && writebackCanvas) {
+      canvas_writeback = this.writeDreaminaImageOutputsToCanvas({
+        canvas_id: handoff.package.canvas.canvas_id,
+        project_id: handoff.package.project.project_id,
+        generation_type,
+        assets: registered_assets,
+        submit_id: parsed.submit_id,
+        actor_id: this.resolveRequestActor(input).actor_id,
+        actor_type: this.resolveRequestActor(input).actor_type
+      });
+    }
+
+    return {
+      ...base,
+      status: parsed?.gen_status === "success" ? "success" : (parsed?.gen_status ?? "submitted"),
+      dry_run: false,
+      credit_before: creditBefore,
+      cli_result: parsed,
+      raw_stdout: submitted.stdout,
+      raw_stderr: submitted.stderr,
+      credit_after: creditAfter,
+      submission: submitted.submission,
+      convergence: submitted.convergence,
+      downloads,
+      registered_assets,
+      canvas_writeback,
+      next_actions: dreaminaCliImageNextActions({ parsed, downloads, registered_assets, outputDir, submission: submitted.submission })
+    };
+  }
+
+  async canvasDreaminaCliUpscaleImage(input = {}) {
+    this.requireDb();
+    const resolution = normalizeDreaminaUpscaleResolution(input.resolution_type);
+    const poll = clampInteger(input.poll ?? DREAMINA_CLI_ASYNC_POLL_SECONDS, 0, 600, "poll");
+    const guide = dreaminaCliUsageGuide();
+    const blockers = [];
+    const source = input.asset_version_id ? this.safeResolveVersionFile(input.asset_version_id) : null;
+    if (!input.asset_version_id) {
+      blockers.push("图像放大需要指定 asset_version_id（要放大的素材版本）。");
+    } else if (!source?.file_path) {
+      blockers.push(`无法解析素材版本的本机文件路径：${input.asset_version_id}`);
+    }
+    let writebackTarget = null;
+    if (input.canvas_id) {
+      const canvas = this.getCanvas({ canvas_id: input.canvas_id });
+      writebackTarget = { canvas_id: canvas.canvas_id, project_id: canvas.project_id };
+    }
+    const execute = input.execute === true || input.accept_credit_spend === true;
+    const outputDir = resolveDreaminaImageOutputDir(input.output_dir, this.root);
+    const runPreflight = input.run_preflight !== false;
+    const ingestOutputs = input.ingest_outputs !== false;
+    const writebackCanvas = input.writeback_canvas !== false && Boolean(writebackTarget);
+    const timeoutMs = clampInteger(input.timeout_ms ?? Math.max(120000, (poll + 90) * 1000), 30000, 900000, "timeout_ms");
+    const argv = source?.file_path
+      ? dreaminaUpscaleArgv({ executable: DEFAULT_DREAMINA_CLI_PATH || "dreamina", resolution, image: source, poll })
+      : null;
+
+    const base = {
+      version: 1,
+      source: "canvas_dreamina_cli_image_upscale",
+      created_at: new Date().toISOString(),
+      guide_source: guide.source,
+      status: blockers.length ? "blocked" : (execute ? "pending_execution" : "ready"),
+      generation_type: "upscale",
+      provider: "dreamina_cli",
+      input: {
+        asset_version_id: input.asset_version_id ?? null,
+        file_path: source?.file_path ?? null,
+        mime_type: source?.mime_type ?? null
+      },
+      canvas: writebackTarget,
+      safety: {
+        image_only: true,
+        upscale_only: true,
+        accepts_credit_spend: input.accept_credit_spend === true,
+        execute,
+        dry_run: !execute
+      },
+      parameters: { cli_kind: "image_upscale", resolution_type: resolution, poll },
+      preflight: [{ name: "user_credit", argv: [DEFAULT_DREAMINA_CLI_PATH || "dreamina", "user_credit"], required: true }],
+      command: blockers.length ? null : {
+        kind: "image_upscale",
+        argv,
+        shell: dreaminaShellCommand(argv),
+        dry_run: !execute
+      },
+      output_dir: outputDir,
+      blockers,
+      cost_policy: [
+        "此工具只执行图像放大（image_upscale），不执行生成或视频命令。",
+        "真实执行前必须明确接受积分消耗。",
+        "除非显式关闭预检，否则真实执行前会先检查即梦账户余额。",
+        "默认异步提交（--poll 0）：受理后只用只读 query_result 收敛；未收敛时保留提交编号并转只读对账，任何情况下都不会自动重提（重提会二次计费）。",
+        "resolution_type 仅支持 2k / 4k / 8k。"
+      ]
+    };
+
+    if (blockers.length || !execute) return base;
+    const authorization = this.beginGeneration({ entry: "dreamina.image.upscale", input });
+    if (!authorization.allowed) return this.blockedGeneration(base, authorization, "dreamina.image.upscale");
+    if (input.accept_credit_spend !== true) throw new Error("真实执行即梦图像放大前必须明确接受积分消耗。");
+
+    await fs.promises.mkdir(outputDir, { recursive: true });
+    const creditBefore = runPreflight ? await this.dreaminaCreditProbe({ authorization }) : null;
+    const submitted = await this.submitDreaminaCliGeneration({
+      authorization,
+      argv: argv.slice(1),
+      timeoutMs,
+      command_kind: "image_upscale",
+      converge: input.converge !== false,
+      maxQueries: input.max_queries,
+      intervalMs: input.converge_interval_ms
+    });
+    const parsed = submitted.parsed;
+    const creditAfter = runPreflight ? await this.dreaminaCreditProbe({ authorization, after: true }) : null;
+    this.finishGeneration(authorization, "provider-calls-complete");
+    const images = extractDreaminaImages(parsed);
+    const downloads = [];
+    const registered_assets = [];
+    let canvas_writeback = null;
+
+    if (parsed?.gen_status === "success" && images.length && (input.download_outputs !== false)) {
+      for (let index = 0; index < images.length; index += 1) {
+        const item = images[index];
+        const target = path.join(outputDir, dreaminaImageDownloadName({ submit_id: parsed.submit_id, index, url: item.url }));
+        await downloadUrl(item.url, target, { timeoutMs: input.download_timeout_ms, attempts: input.download_attempts, fetchImpl: this.downloadFetchImpl });
+        downloads.push({ ...item, file_path: target });
+      }
+    }
+
+    if (downloads.length && ingestOutputs) {
+      for (const download of downloads) {
+        const asset = await this.ingestAsset({
+          file_path: download.file_path,
+          title: input.output_title ?? `即梦图像放大 ${parsed.submit_id ?? "未命名"}`,
+          description: "由即梦命令行 image_upscale 对既有素材版本放大产出。",
+          tags: ["dreamina_cli", "upscale", resolution],
+          kind: "working",
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type,
+          source: {
+            source_type: "dreamina_cli",
+            notes: JSON.stringify({
+              submit_id: parsed.submit_id ?? null,
+              cli_kind: "image_upscale",
+              resolution_type: resolution,
+              source_asset_version_id: input.asset_version_id ?? null
+            })
+          }
+        });
+        this.updateAssetRights({
+          asset_id: asset.asset_id,
+          license_status: input.license_status ?? "unknown",
+          risk_level: input.risk_level ?? "unknown",
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type,
+          source: {
+            source_type: "dreamina_cli",
+            captured_at: new Date().toISOString(),
+            license_hint: "由已登录的即梦命令行账号放大产出；缺可引用授权依据，默认记为 unknown，公开发布前必须完成清权。",
+            notes: JSON.stringify({
+              submit_id: parsed.submit_id ?? null,
+              command: dreaminaShellCommand(argv),
+              credit_count: parsed?.credit_count ?? null
+            })
+          }
+        });
+        registered_assets.push({ asset_id: asset.asset_id, asset_version_id: asset.default_version_id, file_path: download.file_path });
+      }
+    }
+
+    if (registered_assets.length && writebackCanvas) {
+      canvas_writeback = this.writeDreaminaImageOutputsToCanvas({
+        canvas_id: writebackTarget.canvas_id,
+        project_id: writebackTarget.project_id,
+        generation_type: "upscale",
+        assets: registered_assets,
+        submit_id: parsed.submit_id,
+        actor_id: this.resolveRequestActor(input).actor_id,
+        actor_type: this.resolveRequestActor(input).actor_type
+      });
+    }
+
+    return {
+      ...base,
+      status: parsed?.gen_status === "success" ? "success" : (parsed?.gen_status ?? "submitted"),
+      dry_run: false,
+      credit_before: creditBefore,
+      cli_result: parsed,
+      raw_stdout: submitted.stdout,
+      raw_stderr: submitted.stderr,
+      credit_after: creditAfter,
+      submission: submitted.submission,
+      convergence: submitted.convergence,
+      downloads,
+      registered_assets,
+      canvas_writeback,
+      next_actions: dreaminaCliImageNextActions({ parsed, downloads, registered_assets, outputDir, submission: submitted.submission })
+    };
+  }
+
+  writeDreaminaImageOutputsToCanvas(input = {}) {
+    const refs = [];
+    const shapes = [];
+    const edges = [];
+    const canvas = this.getCanvas({ canvas_id: input.canvas_id });
+    const sourceShapes = canvas.shapes.filter((shape) => ["main_reference", "character_reference", "scene_reference", "style_reference"].includes(String(shape.props?.generation_slot ?? "")));
+    for (let index = 0; index < input.assets.length; index += 1) {
+      const item = input.assets[index];
+      const ref = this.addProjectRef({
+        project_id: input.project_id,
+        asset_id: item.asset_id,
+        asset_version_id: item.asset_version_id,
+        role: "generated_image",
+        usage_scope: `即梦${generationTypeText(input.generation_type)}输出。`,
+        pin_mode: "pinned",
+        required: false,
+        notes: input.submit_id ? `submit_id=${input.submit_id}` : null,
+        actor_id: this.resolveRequestActor(input).actor_id,
+        actor_type: this.resolveRequestActor(input).actor_type
+      });
+      refs.push(ref);
+      const shape = this.upsertCanvasShape({
+        canvas_id: input.canvas_id,
+        shape_id: productionCanvasId("shape", input.canvas_id, `dreamina-image-output-${input.submit_id ?? Date.now()}-${index}`),
+        shape_type: "reference_card",
+        subject_type: "project_ref",
+        subject_id: ref.reference_id,
+        title: `即梦图像输出 ${index + 1}`,
+        x: 1140,
+        y: 720 + index * 170,
+        width: 320,
+        height: 150,
+        props: {
+          generation_slot: "draft_output",
+          stage: "shots",
+          role: "generated_output",
+          source: "dreamina_cli",
+          submit_id: input.submit_id ?? null
+        },
+        actor_id: this.resolveRequestActor(input).actor_id,
+        actor_type: this.resolveRequestActor(input).actor_type
+      });
+      shapes.push(shape);
+      for (const sourceShape of sourceShapes) {
+        const edge = this.linkCanvasShapes({
+          canvas_id: input.canvas_id,
+          edge_id: productionCanvasId("edge", input.canvas_id, `${sourceShape.shape_id}-dreamina-image-output-${shape.shape_id}`),
+          source_shape_id: sourceShape.shape_id,
+          target_shape_id: shape.shape_id,
+          relation_type: "derived_from",
+          label: "即梦图像输出",
+          props: { source: "dreamina_cli", submit_id: input.submit_id ?? null },
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type
+        });
+        edges.push(edge);
+      }
+    }
+    const lint = this.lintCanvas({ canvas_id: input.canvas_id });
+    return { refs, shapes, edges, lint };
   }
 
   writeDreaminaVideoOutputsToCanvas(input = {}) {
@@ -1784,8 +2654,8 @@ export class VideoAssetService {
         pin_mode: "pinned",
         required: false,
         notes: input.submit_id ? `submit_id=${input.submit_id}` : null,
-        actor_id: input.actor_id,
-        actor_type: input.actor_type
+        actor_id: this.resolveRequestActor(input).actor_id,
+        actor_type: this.resolveRequestActor(input).actor_type
       });
       refs.push(ref);
       const shape = this.upsertCanvasShape({
@@ -1806,8 +2676,8 @@ export class VideoAssetService {
           source: "dreamina_cli",
           submit_id: input.submit_id ?? null
         },
-        actor_id: input.actor_id,
-        actor_type: input.actor_type
+        actor_id: this.resolveRequestActor(input).actor_id,
+        actor_type: this.resolveRequestActor(input).actor_type
       });
       shapes.push(shape);
       for (const sourceShape of sourceShapes) {
@@ -1819,8 +2689,8 @@ export class VideoAssetService {
           relation_type: "derived_from",
           label: "即梦生成输出",
           props: { source: "dreamina_cli", submit_id: input.submit_id ?? null },
-          actor_id: input.actor_id,
-          actor_type: input.actor_type
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type
         });
         edges.push(edge);
       }
@@ -1886,8 +2756,8 @@ export class VideoAssetService {
         lint_issues: brief.lint_issues.map((issue) => ({ level: issue.level, code: issue.code, message: issue.message }))
       },
       visibility: input.visibility ?? "project",
-      actor_id: input.actor_id,
-      actor_type: input.actor_type
+      actor_id: this.resolveRequestActor(input).actor_id,
+      actor_type: this.resolveRequestActor(input).actor_type
     });
     return { brief, annotation };
   }
@@ -1896,8 +2766,8 @@ export class VideoAssetService {
     this.requireDb();
     if (!input.canvas_id) throw new Error("canvas_id is required");
     const canvas = this.getCanvas({ canvas_id: input.canvas_id });
-    const actor_id = input.actor_id ?? DEFAULT_ACTOR;
-    const actor_type = input.actor_type ?? "agent";
+    const actor_id = this.resolveRequestActor(input).actor_id;
+    const actor_type = this.resolveRequestActor(input).actor_type;
     const annotation = input.annotation_id ? this.getAnnotation(input.annotation_id) : null;
     const source_shape_id = input.source_shape_id ?? input.shape_id ?? null;
     let sourceShape = source_shape_id ? canvas.shapes.find((shape) => shape.shape_id === source_shape_id) ?? null : null;
@@ -2004,8 +2874,8 @@ export class VideoAssetService {
     const existingProps = existingShape.props ?? {};
     if (existingProps.role !== "revision_card") throw new Error(`Canvas shape is not a revision_card: ${input.shape_id}`);
     const status = normalizeRevisionCardStatus(input.status ?? existingProps.status);
-    const actor_id = input.actor_id ?? DEFAULT_ACTOR;
-    const actor_type = input.actor_type ?? "agent";
+    const actor_id = this.resolveRequestActor(input).actor_id;
+    const actor_type = this.resolveRequestActor(input).actor_type;
     const now = new Date().toISOString();
     const statusNote = input.status_note === undefined ? existingProps.status_note ?? null : nullableTrimmedString(input.status_note);
     const props = {
@@ -2065,8 +2935,8 @@ export class VideoAssetService {
     const slotSpec = generationSlotFromShape(slot);
     const priorOutput = latestGeneratedOutputForSlot(canvas, slot.shape_id);
     const writebackSemantics = generationWritebackSemantics(slotSpec.replace_policy, priorOutput);
-    const actor_id = input.actor_id ?? DEFAULT_ACTOR;
-    const actor_type = input.actor_type ?? "agent";
+    const actor_id = this.resolveRequestActor(input).actor_id;
+    const actor_type = this.resolveRequestActor(input).actor_type;
     const idempotencyKey = normalizeGeneratedAssetIdempotencyKey(input.idempotency_key, {
       file_path: input.file_path,
       slot_shape_id: slot.shape_id,
@@ -2354,6 +3224,14 @@ export class VideoAssetService {
     };
   }
 
+  kieAudioApiKey() {
+    return pickConfigSecretString(this.pluginConfig, ["audio", "kie", "apiKey"]);
+  }
+
+  doubaoAudioApiKey() {
+    return pickConfigSecretString(this.pluginConfig, ["audio", "doubao", "apiKey"]);
+  }
+
   doubaoAudioPlan(input = {}) {
     this.requireDb();
     const project = input.project_id ? this.requireProject(input.project_id) : null;
@@ -2367,8 +3245,10 @@ export class VideoAssetService {
     const plan = this.doubaoAudioPlan(input);
     const execute = plan.request.execution.execute === true;
     if (plan.status === "blocked" || !execute) return plan;
+    const authorization = this.beginGeneration({ entry: "audio.doubao.generate", input });
+    if (!authorization.allowed) return this.blockedGeneration(plan, authorization, "audio.doubao.generate");
     const outputDir = resolveDoubaoAudioOutputDir(plan.request.execution.output_dir, this.root);
-    const generated = await runDoubaoAudioGeneration(plan.request, { outputDir });
+    const generated = await this.callProvider({ audit: authorization, payload: { request: plan.request, outputDir, apiKey: this.doubaoAudioApiKey() } });
     const registered_assets = [];
 
     if (generated.status === "success" && plan.request.execution.ingest_outputs !== false) {
@@ -2379,29 +3259,29 @@ export class VideoAssetService {
           description: "由豆包音频生成 1.0 根据项目声音导演稿生成。",
           tags: plan.request.asset_policy.tags,
           kind: plan.request.asset_policy.kind,
-          actor_id: input.actor_id ?? DEFAULT_ACTOR,
-          actor_type: input.actor_type ?? "agent",
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type,
           source: {
             source_type: "doubao_audio",
             notes: JSON.stringify({
               request: plan.request,
               provider_result: summarizeDoubaoProviderResult(generated),
               platform_review_status: generated.platform_review_status,
-              license_policy: "platform_review_passed_means_cleared"
+              license_policy: "platform_review_passed_is_content_review_only"
             })
           }
         });
         this.updateAssetRights({
           asset_id: asset.asset_id,
-          license_status: "cleared",
-          risk_level: "low",
-          notes: `豆包音频平台审核通过，资产按项目策略登记为 cleared：${asset.title}`,
-          actor_id: input.actor_id ?? DEFAULT_ACTOR,
-          actor_type: input.actor_type ?? "agent",
+          license_status: input.license_status ?? "unknown",
+          risk_level: input.risk_level ?? "unknown",
+          notes: `豆包音频平台审核通过仅代表内容审核通过；缺可引用授权依据，授权默认记为 unknown：${asset.title}`,
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type,
           source: {
             source_type: "doubao_audio_platform_review",
             captured_at: generated.completed_at ?? new Date().toISOString(),
-            license_hint: "平台审核通过即代表本次上传素材、模型输出与相关版权问题已通过。",
+            license_hint: "平台审核通过仅代表内容层面审核通过，不构成版权授权依据；授权状态保持 unknown，公开发布前必须完成清权。",
             notes: JSON.stringify({
               task_id: generated.task_id,
               platform_review_status: generated.platform_review_status,
@@ -2420,9 +3300,9 @@ export class VideoAssetService {
             usage_scope: input.project_ref?.usage_scope ?? "作为 @音频1 或项目声音总轨候选。",
             pin_mode: input.project_ref?.pin_mode ?? "pinned",
             required: input.project_ref?.required ?? false,
-            notes: input.project_ref?.notes ?? `doubao_task_id=${generated.task_id}; platform_review_status=${generated.platform_review_status}; license_status=cleared`,
-            actor_id: input.actor_id ?? DEFAULT_ACTOR,
-            actor_type: input.actor_type ?? "agent"
+            notes: input.project_ref?.notes ?? `doubao_task_id=${generated.task_id}; platform_review_status=${generated.platform_review_status}; license_status=${input.license_status ?? "unknown"}`,
+            actor_id: this.resolveRequestActor(input).actor_id,
+            actor_type: this.resolveRequestActor(input).actor_type
           });
         }
         registered_assets.push({ asset_id: asset.asset_id, asset_version_id: asset.default_version_id, file_path: output.file_path, project_ref });
@@ -2464,8 +3344,10 @@ export class VideoAssetService {
     const plan = this.canvasDoubaoAudioPlan(input);
     const execute = plan.request.execution.execute === true;
     if (plan.status === "blocked" || !execute) return plan;
+    const authorization = this.beginGeneration({ entry: "audio.doubao.canvas.generate", input });
+    if (!authorization.allowed) return this.blockedGeneration(plan, authorization, "audio.doubao.canvas.generate");
     const outputDir = resolveDoubaoAudioOutputDir(plan.request.execution.output_dir, this.root);
-    const generated = await runDoubaoAudioGeneration(plan.request, { outputDir });
+    const generated = await this.callProvider({ audit: authorization, payload: { request: plan.request, outputDir, apiKey: this.doubaoAudioApiKey() } });
     let canvas_writeback = null;
 
     if (generated.status === "success" && generated.outputs?.length && plan.request.execution.ingest_outputs !== false && plan.request.execution.writeback_canvas !== false) {
@@ -2484,12 +3366,12 @@ export class VideoAssetService {
             request: plan.request,
             provider_result: summarizeDoubaoProviderResult(generated),
             platform_review_status: generated.platform_review_status,
-            license_policy: "platform_review_passed_means_cleared"
+            license_policy: "platform_review_passed_is_content_review_only"
           })
         },
-        license_status: "cleared",
-        risk_level: "low",
-        rights_notes: "豆包音频平台审核通过；按项目权利策略，平台审核通过即代表本次上传素材、模型输出与相关版权问题已通过，可作为资产库 cleared 依据。",
+        license_status: input.license_status ?? "unknown",
+        risk_level: input.risk_level ?? "unknown",
+        rights_notes: "豆包音频平台审核通过仅代表内容层面审核通过，不构成版权授权依据；授权状态保持 unknown，公开发布前必须完成清权。",
         classification: {
           domain: "audio",
           type: "generated_output",
@@ -2502,12 +3384,12 @@ export class VideoAssetService {
           usage_scope: "作为 @音频1 或画布声音总轨候选。",
           pin_mode: "pinned",
           required: false,
-          notes: `doubao_task_id=${generated.task_id}; platform_review_status=${generated.platform_review_status}; license_status=cleared`
+          notes: `doubao_task_id=${generated.task_id}; platform_review_status=${generated.platform_review_status}; license_status=${input.license_status ?? "unknown"}`
         },
         writeback: { placement: "right", relation_type: "derived_from", label: "豆包音频输出" },
         slot_status: "filled",
-        actor_id: input.actor_id ?? DEFAULT_ACTOR,
-        actor_type: input.actor_type ?? "agent"
+        actor_id: this.resolveRequestActor(input).actor_id,
+        actor_type: this.resolveRequestActor(input).actor_type
       });
     }
 
@@ -2540,7 +3422,8 @@ export class VideoAssetService {
       cost_policy: [
         "dry-run 只生成请求包，不调用豆包音频端口。",
         "真实执行必须 execute=true 且 accept_cost=true。",
-        "按家主最高指示，平台审核通过、生成成功或输出可下载后，生成音频自动登记为 license_status=cleared、risk_level=low。"
+        "平台审核通过、生成成功或输出可下载都只说明内容层审核与生成成功，**不构成版权授权依据**；",
+        "因此生成音频的授权默认登记为 license_status=unknown、risk_level=unknown，只有调用方显式传入有据的授权值才会登记为 cleared。"
       ],
       asset_policy: request.asset_policy,
       next_actions: doubaoAudioNextActions({ request, validation })
@@ -2548,7 +3431,7 @@ export class VideoAssetService {
   }
 
   validateDoubaoAudioRequestWithAssets(request) {
-    const validation = validateDoubaoAudioRequest(request);
+    const validation = validateDoubaoAudioRequest(request, { apiKey: this.doubaoAudioApiKey() });
     for (const voice of request.voices ?? []) {
       if (!voice.reference_asset_id) continue;
       try {
@@ -2577,8 +3460,10 @@ export class VideoAssetService {
     const plan = this.kieSunoPlan(input);
     const execute = plan.request.execution.execute === true;
     if (plan.status === "blocked" || !execute) return plan;
+    const authorization = this.beginGeneration({ entry: "audio.kie.generate", input });
+    if (!authorization.allowed) return this.blockedGeneration(plan, authorization, "audio.kie.generate");
     const outputDir = resolveKieSunoOutputDir(plan.request.execution.output_dir, this.root);
-    const generated = await runKieSunoGeneration(plan.request, { outputDir });
+    const generated = await this.callProvider({ audit: authorization, payload: { request: plan.request, outputDir, apiKey: this.kieAudioApiKey() } });
     const registered_assets = [];
 
     if (generated.status === "success" && plan.request.execution.ingest_outputs !== false) {
@@ -2589,8 +3474,8 @@ export class VideoAssetService {
           description: "由 KIE Suno API 根据项目音乐请求生成，公开交付前需要版权与商用条款复核。",
           tags: plan.request.asset_policy.tags,
           kind: plan.request.asset_policy.kind,
-          actor_id: input.actor_id ?? DEFAULT_ACTOR,
-          actor_type: input.actor_type ?? "agent",
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type,
           source: {
             source_type: "kie_suno",
             notes: JSON.stringify({
@@ -2605,8 +3490,8 @@ export class VideoAssetService {
           license_status: "unknown",
           risk_level: "unknown",
           notes: `KIE Suno 输出已入库但未完成版权/商用条款人工复核：${asset.title}`,
-          actor_id: input.actor_id ?? DEFAULT_ACTOR,
-          actor_type: input.actor_type ?? "agent",
+          actor_id: this.resolveRequestActor(input).actor_id,
+          actor_type: this.resolveRequestActor(input).actor_type,
           source: {
             source_type: "kie_suno_generation_record",
             captured_at: generated.completed_at ?? new Date().toISOString(),
@@ -2632,8 +3517,8 @@ export class VideoAssetService {
             pin_mode: input.project_ref?.pin_mode ?? "pinned",
             required: input.project_ref?.required ?? false,
             notes: input.project_ref?.notes ?? `kie_suno_task_id=${generated.task_id}; license_status=unknown; rights_review_required=true`,
-            actor_id: input.actor_id ?? DEFAULT_ACTOR,
-            actor_type: input.actor_type ?? "agent"
+            actor_id: this.resolveRequestActor(input).actor_id,
+            actor_type: this.resolveRequestActor(input).actor_type
           });
         }
         registered_assets.push({ asset_id: asset.asset_id, asset_version_id: asset.default_version_id, file_path: output.file_path, project_ref });
@@ -2675,8 +3560,10 @@ export class VideoAssetService {
     const plan = this.canvasKieSunoPlan(input);
     const execute = plan.request.execution.execute === true;
     if (plan.status === "blocked" || !execute) return plan;
+    const authorization = this.beginGeneration({ entry: "audio.kie.canvas.generate", input });
+    if (!authorization.allowed) return this.blockedGeneration(plan, authorization, "audio.kie.canvas.generate");
     const outputDir = resolveKieSunoOutputDir(plan.request.execution.output_dir, this.root);
-    const generated = await runKieSunoGeneration(plan.request, { outputDir });
+    const generated = await this.callProvider({ audit: authorization, payload: { request: plan.request, outputDir, apiKey: this.kieAudioApiKey() } });
     let canvas_writeback = null;
 
     if (generated.status === "success" && generated.outputs?.length && plan.request.execution.ingest_outputs !== false && plan.request.execution.writeback_canvas !== false) {
@@ -2716,8 +3603,8 @@ export class VideoAssetService {
         },
         writeback: { placement: "right", relation_type: "derived_from", label: "KIE Suno 输出" },
         slot_status: "filled",
-        actor_id: input.actor_id ?? DEFAULT_ACTOR,
-        actor_type: input.actor_type ?? "agent"
+        actor_id: this.resolveRequestActor(input).actor_id,
+        actor_type: this.resolveRequestActor(input).actor_type
       });
     }
 
@@ -2759,7 +3646,7 @@ export class VideoAssetService {
   }
 
   validateKieSunoRequestWithAssets(request) {
-    const validation = validateKieSunoRequest(request);
+    const validation = validateKieSunoRequest(request, { apiKey: this.kieAudioApiKey() });
     for (const key of ["source_asset_id", "reference_asset_id"]) {
       const assetId = request.request?.[key];
       if (!assetId) continue;
@@ -2931,23 +3818,55 @@ export class VideoAssetService {
     return { root_key, query, matches };
   }
 
+  /**
+   * Legacy staging upload: the base64 tool-call entry point.
+   *
+   * REN-06 keeps this entry working (existing callers and the UI still use it) but it must NOT be a way
+   * around the new limits. Two things changed:
+   *
+   *   1. The size limit is the shared upload policy, not the old private constant, and the staging total
+   *      and disk floor are checked here too. A caller that finds the streaming route inconvenient can no
+   *      longer simply use this one to exceed the quota.
+   *   2. What it stages is ATTRIBUTED: it records an ownership row, so a file written through this path
+   *      is not an untracked orphan the moment it lands.
+   *
+   * The base64 transport itself is left alone deliberately - changing it is REN-06's streaming route's
+   * job, and silently repurposing this entry would break the callers it still has. Its cost is stated
+   * here: the caller has already materialised the whole file in memory by the time this runs, which is
+   * exactly why the streaming route exists.
+   */
   async uploadStagingFile(input = {}) {
     this.requireDb();
     if (!input.file_name) throw new Error("file_name is required");
     if (!input.content_base64) throw new Error("content_base64 is required");
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const fileName = sanitizeFileName(input.file_name);
     const targetDir = this.resolveAllowedFilePath("asset-staging", input.relative_path ?? "");
     await fs.promises.mkdir(targetDir.absolute_path, { recursive: true });
     const buffer = Buffer.from(String(input.content_base64), "base64");
     if (buffer.length === 0) throw new Error("uploaded file is empty");
-    if (buffer.length > MAX_STAGING_UPLOAD_BYTES) throw new Error("uploaded file exceeds staging limit");
+    const policy = this.uploadPolicy ?? resolveUploadPolicy({});
+    if (buffer.length > policy.maxFileBytes) {
+      throw new Error(`uploaded file exceeds the ${policy.maxFileBytes}-byte per-file limit`);
+    }
+    // Same quota and disk floor as the streaming route.
+    await this.uploadStore.assertCapacity({ incoming: buffer.length, stage: "legacy-staging-upload" });
     const targetName = uniqueStagingName(fileName);
     const targetPath = path.join(targetDir.absolute_path, targetName);
     if (!isInsidePath(targetDir.root_absolute, targetPath)) throw new Error("upload target escapes staging root");
     await fs.promises.writeFile(targetPath, buffer, { flag: "wx" });
     const relative_path = normalizeRelativePath(path.posix.join(targetDir.relative_path_posix, targetName));
-    this.commit({ scope: "system", target_id: relative_path, action: "staging.upload", message: "已上传暂存文件：" + fileName, actor_id: actor.actor_id, changes: { root_key: "asset-staging", relative_path, size_bytes: buffer.length } });
+    // Attribute the bytes: this path has no upload session, so the staging row IS the ownership record.
+    const sha256 = createHash("sha256").update(buffer).digest("hex");
+    this.uploadStore.recordStagedObject({
+      relativePath: relative_path,
+      ownerActorId: actor.actor_id,
+      sizeBytes: buffer.length,
+      sha256,
+      state: "staged",
+      notes: "staged through the legacy base64 entry point (no upload session)"
+    });
+    this.commit({ scope: "system", target_id: relative_path, action: "staging.upload", message: "已上传暂存文件：" + fileName, actor_id: actor.actor_id, changes: { root_key: "asset-staging", relative_path, size_bytes: buffer.length, sha256, policy_max_file_bytes: policy.maxFileBytes, entry: "legacy-base64" } });
     return this.inspectFile({ root_key: "asset-staging", relative_path });
   }
 
@@ -2963,12 +3882,12 @@ export class VideoAssetService {
       description: input.description ?? null,
       tags: Array.isArray(input.tags) ? input.tags : ["staging"],
       kind: input.kind ?? "raw",
-      actor_id: input.actor_id ?? DEFAULT_ACTOR,
-      actor_type: input.actor_type ?? "agent",
+      actor_id: this.resolveRequestActor(input).actor_id,
+      actor_type: this.resolveRequestActor(input).actor_type,
       change_summary: input.change_summary ?? "Confirmed from staging upload",
       source: input.source
     });
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     this.commit({ scope: "system", target_id: normalizeRelativePath(input.relative_path), action: "staging.ingest", message: "已入库暂存文件：" + path.basename(resolved.absolute_path), actor_id: actor.actor_id, changes: { root_key: "asset-staging", relative_path: normalizeRelativePath(input.relative_path), asset_id: asset.asset_id, default_version_id: asset.default_version_id } });
     return { ok: true, asset, file: await this.inspectFile({ root_key: "asset-staging", relative_path: input.relative_path }) };
   }
@@ -2976,7 +3895,7 @@ export class VideoAssetService {
   async rejectStagingFile(input = {}) {
     this.requireDb();
     if (!input.relative_path) throw new Error("relative_path is required");
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const resolved = this.resolveAllowedFilePath("asset-staging", input.relative_path);
     const stat = await fs.promises.stat(resolved.absolute_path);
     if (!stat.isFile()) throw new Error("relative_path must point to a staging file");
@@ -3040,7 +3959,7 @@ export class VideoAssetService {
     const domain = this.validateDomain(input.domain);
     const confidence = this.validateConfidence(input.confidence ?? "confirmed");
     const source = this.validateClassificationSource(input.source ?? "manual");
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const classification_id = id("cls");
     this.db.prepare(`INSERT INTO asset_classifications (classification_id, asset_id, asset_version_id, domain, type, subtype, confidence, source, created_by, created_at, updated_at)
@@ -3070,7 +3989,7 @@ export class VideoAssetService {
     if (!input?.canonical_name) throw new Error("canonical_name is required");
     const entity_type = this.validateEntityType(input.entity_type);
     if (input.project_id) this.requireProject(input.project_id);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const entity_id = id("ent");
     this.db.prepare(`INSERT INTO production_entities (entity_id, entity_key, entity_type, canonical_name, aliases_json, description, project_id, status, created_by, created_at, updated_at)
@@ -3113,7 +4032,7 @@ export class VideoAssetService {
     if (!entity) throw new Error(`Entity not found: ${input.entity_id ?? input.entity_key}`);
     const relation_type = this.validateRelationType(input.relation_type);
     const confidence = this.validateConfidence(input.confidence ?? "confirmed");
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const link_id = id("link");
     this.db.prepare(`INSERT INTO asset_entity_links (link_id, asset_id, asset_version_id, entity_id, relation_type, confidence, notes, created_by, created_at)
@@ -3134,7 +4053,7 @@ export class VideoAssetService {
     const annotation_type = this.validateAnnotationType(input.annotation_type);
     this.requireAnnotationTarget(target_type, input.target_id);
     const visibility = this.validateAnnotationVisibility(input.visibility ?? "internal");
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     const annotation_id = id("ann");
     this.db.prepare(`INSERT INTO asset_annotations (annotation_id, target_type, target_id, annotation_type, title, body, structured_json, status, visibility, created_by, created_at, updated_at)
@@ -3162,7 +4081,7 @@ export class VideoAssetService {
     const existing = this.getAnnotation(input.annotation_id);
     const status = input.status === undefined ? existing.status : this.validateAnnotationStatus(input.status);
     const visibility = input.visibility === undefined ? existing.visibility : this.validateAnnotationVisibility(input.visibility);
-    const actor = this.ensureActor(input.actor_id ?? DEFAULT_ACTOR, input.actor_type ?? "agent");
+    const actor = this.ensureActor(this.resolveRequestActor(input).actor_id, this.resolveRequestActor(input).actor_type);
     const now = new Date().toISOString();
     this.db.prepare(`UPDATE asset_annotations SET title = ?, body = ?, structured_json = ?, status = ?, visibility = ?, updated_at = ? WHERE annotation_id = ?`)
       .run(input.title ?? existing.title, input.body ?? existing.body, input.structured === undefined ? existing.structured_json : jsonOrNull(input.structured), status, visibility, now, input.annotation_id);
@@ -3298,6 +4217,250 @@ export class VideoAssetService {
     return projectFromRow(row);
   }
 
+  // -------------------------------------------------------------------------------------------
+  // REN-02: generation authorization, attribution and the provider chokepoint
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * Request-level attribution.
+   *
+   * A trusted context (attached by the ingress layer through a Symbol, which a JSON body can never
+   * forge) wins and is marked `actor_source: trusted-context`. A model-supplied `actor_id` is kept
+   * for backwards compatibility but is recorded as `actor_source: request-param` - it is a label,
+   * never an identity, and it never influences the generation authorization decision.
+   */
+  resolveRequestActor(input = {}) {
+    const context = trustedContextOf(input);
+    if (context && context.trusted === true && typeof context.actor_id === "string" && context.actor_id.trim()) {
+      return { actor_id: context.actor_id.trim(), actor_type: context.actor_type ?? "agent", actor_source: context.source ?? "trusted-context", trusted: true };
+    }
+    const supplied = typeof input?.actor_id === "string" && input.actor_id.trim() ? input.actor_id.trim() : null;
+    return {
+      actor_id: supplied ?? DEFAULT_ACTOR,
+      actor_type: input?.actor_type ?? "agent",
+      actor_source: supplied ? "request-param" : "default-unattributed",
+      trusted: false
+    };
+  }
+
+  /**
+   * Authorize one paid generation call.
+   * Must be awaited BEFORE any provider I/O - including the Dreamina credit preflight, which is a
+   * real CLI invocation against the provider account.
+   * @returns {{allowed:boolean, code?:string, error?:string, audit_id:string|null, public:object}}
+   */
+  beginGeneration({ entry, input = {}, params = null, budget_scope = null }) {
+    if (!GENERATION_ENTRY_POLICY[entry]) throw new Error(`unknown generation entry: ${String(entry)}`);
+    const context = trustedContextOf(input);
+    const decision = this.providerGateway.authorize({
+      entry,
+      surface: context?.surface ?? "tool",
+      context,
+      params: params ?? input,
+      // Trusted, plugin-supplied reservation scope (a job's durable ledger id). It is a separate
+      // argument on purpose: a request body cannot reach it, so no caller can declare its own spend.
+      budget_scope
+    });
+    // The trusted context rides on the returned object (as a Symbol, so a JSON round trip cannot
+    // forge it). `callProvider` reads it back to bind every adapter call of this operation to the
+    // actor the authorization was issued to.
+    return withTrustedContext({ ...decision, public: this.publicAuthorization(decision) }, context);
+  }
+
+  /**
+   * The only path that executes a provider adapter.
+   *
+   * A gateway refusal (unknown/expired/exhausted authorization, provider or actor mismatch, monitor
+   * mode) is turned into a thrown error: the generation methods already hold an authorization here,
+   * so a refusal means the operation must not proceed - and it must not be mistaken for a provider
+   * result.
+   */
+  async callProvider({ audit, provider = null, payload = {} }) {
+    const outcome = await this.providerGateway.invokeAdapter({
+      audit_id: audit?.audit_id,
+      provider: provider ?? GENERATION_ENTRY_POLICY[audit?.audit?.entry]?.provider ?? null,
+      context: trustedContextOf(audit),
+      payload
+    });
+    if (outcome && outcome.refused) {
+      const error = new Error(`provider call refused (${outcome.code}): ${outcome.error}`);
+      error.code = outcome.code;
+      error.details = outcome.details;
+      throw error;
+    }
+    return outcome;
+  }
+
+  /**
+   * Close the authorization of a finished generation operation.
+   *
+   * Without this, an authorization that did not use all of its allowed provider calls (for example a
+   * Dreamina run with the credit preflight disabled) would stay live until its TTL expired, and its
+   * audit id - which the caller already received - could be replayed inside that window.
+   */
+  finishGeneration(audit, outcome = "completed") {
+    if (!audit?.audit_id) return { closed: false, reason: "no audit id" };
+    try {
+      return this.providerGateway.finalize(audit.audit_id, { outcome });
+    } catch (error) {
+      this.logger?.warn?.(`[video-assets] closing generation authorization failed: ${error instanceof Error ? error.message : String(error)}`);
+      return { closed: false, reason: "error" };
+    }
+  }
+
+  /**
+   * REN-11 fix round (D3): a zero-cost credit probe that never destroys the result it surrounds.
+   *
+   * `user_credit` is a read-only CLI call, but it goes through the same bounded authorization. When the
+   * call before it failed, the gateway closes that authorization, so the old code's plain `callProvider`
+   * would throw here and the already-paid submit result would be lost while unwinding. A failed probe is
+   * reported as `unmeasured` (which is a fact) instead of being allowed to mask a provider outcome.
+   */
+  async dreaminaCreditProbe({ authorization, after = false }) {
+    try {
+      const call = await this.callProvider({ audit: authorization, payload: { argv: ["user_credit"], timeoutMs: 90000 } });
+      return tryParseDreaminaJson(call.stdout);
+    } catch (error) {
+      // Before the paid call a failed preflight must fail closed and propagate the provider's own error
+      // (nothing has been spent yet, and the caller needs the real cause).
+      if (!after) throw error;
+      // After it, the opposite: a failed recheck must not be allowed to destroy the result of a call that
+      // has already been paid for. Reported as `unmeasured`, which is a fact, not a zero.
+      return {
+        unmeasured: true,
+        phase: "after",
+        reason: clipText(String(error?.message ?? error), 300),
+        note: "余额复核未完成；它不参与本次生成的结果判定，也不改变已发生的供应商调用。"
+      };
+    }
+  }
+
+  /**
+   * REN-11 fix round (D3): submit one CLI generation and converge it with read-only queries.
+   *
+   * Shape of the fix, all three parts evidenced on the real machine on 2026-09-25:
+   *   1. the submission is issued with `--poll 0` (see `DREAMINA_CLI_ASYNC_POLL_SECONDS`), so the
+   *      provider's `submit_id` reaches us before any waiting happens;
+   *   2. the terminal state is obtained with bounded, read-only `query_result` calls - never by
+   *      re-submitting, which is what a lost submit id would otherwise invite;
+   *   3. a failed call is classified (local parameter rejection vs transport failure) and a transport
+   *      failure reports explicitly that the submission may have been accepted and charged, with the
+   *      read-only reconciliation commands to resolve it.
+   *
+   * A provider call that throws still throws (the caller's error contract is unchanged); what changes is
+   * that the error now carries `code` + `details.failure_class` + the reconciliation plan, and that an
+   * unparseable-but-exit-zero output is returned as a classified `submission` instead of being silently
+   * read as "no result".
+   */
+  async submitDreaminaCliGeneration({ authorization, argv, timeoutMs, command_kind = null, converge = true, maxQueries = DREAMINA_CLI_MAX_QUERIES, intervalMs = DREAMINA_CLI_QUERY_INTERVAL_MS, sleep = null }) {
+    let call;
+    try {
+      call = await this.callProvider({ audit: authorization, payload: { argv, timeoutMs } });
+    } catch (error) {
+      const failure = classifyDreaminaCliFailure({ error, command_kind });
+      const wrapped = new Error(failure.message);
+      wrapped.code = failure.code;
+      wrapped.details = failure.details;
+      throw wrapped;
+    }
+    const parsed = tryParseDreaminaJson(call.stdout);
+    const submitId = typeof parsed?.submit_id === "string" && parsed.submit_id.trim() ? parsed.submit_id.trim() : null;
+    const submission = {
+      provider: "dreamina_cli",
+      command_kind,
+      poll_seconds: 0,
+      submit_id: submitId,
+      accepted: Boolean(submitId),
+      state: parsed?.gen_status ?? "unknown",
+      provider_response: parsed ?? null,
+      failure_class: null,
+      reconcile_required: false,
+      reconciliation: null
+    };
+    if (!submitId) {
+      // Two different situations, never merged: a parseable refusal (nothing was submitted, so fixing
+      // the parameters and re-running is safe) and an unparseable answer (the submission may exist and
+      // may be charged, so it must be reconciled read-only).
+      const failure = classifyDreaminaCliFailure({ parsed, stdout: call.stdout, stderr: call.stderr, command_kind });
+      submission.failure_class = failure.class;
+      submission.reconcile_required = failure.details.reconcile_required;
+      submission.reconciliation = failure.details.reconciliation;
+      submission.diagnosis = failure.details;
+      return { parsed, stdout: call.stdout, stderr: call.stderr, submission, convergence: null };
+    }
+    if (!converge || parsed?.gen_status !== "querying") {
+      return { parsed, stdout: call.stdout, stderr: call.stderr, submission, convergence: null };
+    }
+    const convergence = await convergeDreaminaSubmission({
+      maxQueries: Number.isFinite(Number(maxQueries)) && Number(maxQueries) > 0 ? Math.trunc(Number(maxQueries)) : DREAMINA_CLI_MAX_QUERIES,
+      intervalMs: Number.isFinite(Number(intervalMs)) && Number(intervalMs) >= 0 ? Number(intervalMs) : DREAMINA_CLI_QUERY_INTERVAL_MS,
+      sleep,
+      query: () => this.callProvider({ audit: authorization, payload: { argv: ["query_result", `--submit_id=${submitId}`], timeoutMs: 90000 } })
+    });
+    const settled = convergence.parsed ?? parsed;
+    submission.state = settled?.gen_status ?? "querying";
+    submission.converged = convergence.terminal;
+    if (!convergence.terminal) {
+      // Not settled inside the window: the id is kept and the caller is told to reconcile, instead of
+      // being handed a bare failure for work the provider may already have charged for.
+      submission.reconcile_required = true;
+      submission.reconciliation = dreaminaCliReconcilePlan({ submit_id: submitId, command_kind });
+    } else if (submission.state === "fail") {
+      submission.failure_class = "provider_reported_failure";
+      submission.failure_reason = settled?.fail_reason ?? null;
+    }
+    return { parsed: settled, stdout: call.stdout, stderr: call.stderr, submission, convergence };
+  }
+
+  /** Shape returned to callers for both allowed and denied generation decisions. */
+  publicAuthorization(decision) {
+    return {
+      allowed: decision.allowed === true,
+      code: decision.code ?? "OK",
+      error: decision.error ?? null,
+      details: decision.details ?? null,
+      audit_id: decision.audit_id ?? null,
+      entry: decision.audit?.entry ?? null,
+      provider: decision.audit?.provider ?? null,
+      surface: decision.audit?.surface ?? null,
+      actor: decision.audit?.attribution ?? null,
+      estimated_credits: decision.audit?.estimate?.credits ?? null,
+      // The published provider-call allowance and the reservation scope: both are part of the contract a
+      // caller (the queue adapter) reads back, so they are reported instead of being internal.
+      calls_max: decision.audit?.calls_max ?? null,
+      budget_scope: decision.audit?.budget_scope ?? null,
+      budget: decision.audit?.budget ?? null,
+      // The accepted submission a read-only recovery grant is bound to (null for a paid grant). Part of
+      // the contract a caller reads back, so a report can show WHAT the grant was bound to.
+      read_only_binding: decision.read_only_binding ?? decision.audit?.read_only_binding ?? null,
+      decided_at: decision.audit?.at ?? null
+    };
+  }
+
+  /** Blocked generation response: same shape as the plan, plus the authorization verdict. */
+  blockedGeneration(base, decision, entry) {
+    return {
+      ...base,
+      status: "blocked",
+      provider_invoked: false,
+      entry,
+      blockers: [...(base?.blockers ?? []), decision.error],
+      authorization: decision.public,
+      next_actions: [
+        "生成未执行：当前调用未获得生成授权或没有可用预算，provider 未被调用。",
+        "如需授权，请检查 security.generation（allowSurfaces / allowActors / ledger）与预算配置。"
+      ]
+    };
+  }
+
+  providerGatewayStats() {
+    return this.providerGateway.stats();
+  }
+
+  providerGatewayDenials() {
+    return this.providerGateway.denials();
+  }
+
   ensureActor(actor_id, actor_type) {
     const existing = this.db.prepare("SELECT * FROM actors WHERE actor_id = ?").get(actor_id);
     if (existing) return existing;
@@ -3315,6 +4478,34 @@ export class VideoAssetService {
     addColumn("updated_at", "TEXT");
     addColumn("removed_at", "TEXT");
     addColumn("removed_by", "TEXT");
+
+    // REN-08: the canvas document revision. `CREATE TABLE IF NOT EXISTS` in the schema script gives the column to a
+    // NEW database but does nothing to one that already exists, so the column is added here too - a canvas created
+    // before this package must be editable and must start reporting a revision, not fail on a missing column.
+    // DEFAULT 0 is the honest starting value: an existing canvas has no recorded history, and claiming a nonzero
+    // revision would assert a change that was never applied.
+    const canvasColumns = new Set(this.db.prepare("PRAGMA table_info(canvases)").all().map((column) => column.name));
+    if (!canvasColumns.has("revision")) {
+      this.db.prepare("ALTER TABLE canvases ADD COLUMN revision INTEGER NOT NULL DEFAULT 0").run();
+    }
+    // The command log itself: old databases predate it, so create it here as well as in the schema script.
+    this.db.exec(`CREATE TABLE IF NOT EXISTS canvas_commands (
+      command_id TEXT PRIMARY KEY,
+      canvas_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      base_revision INTEGER NOT NULL,
+      command_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      inverse_json TEXT,
+      result_json TEXT,
+      actor_id TEXT NOT NULL,
+      client_id TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(canvas_id) REFERENCES canvases(canvas_id),
+      UNIQUE(canvas_id, revision)
+    )`);
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_canvas_commands_canvas_revision ON canvas_commands(canvas_id, revision DESC)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_canvas_commands_actor ON canvas_commands(actor_id, canvas_id, revision DESC)");
   }
 
   commit({ scope, target_id, action, message, actor_id, changes }) {
@@ -3576,8 +4767,400 @@ export class VideoAssetService {
     return { subject_type, subject_id };
   }
 
+  /**
+   * The unconditional document-revision bump, used by everydocument writer that is NOT part of the command protocol
+   * (the agent tool surface). Note that this is the same statement as the command path's no-expected case - the only
+   * difference is whether a compare is attached.
+   */
   touchCanvas(canvas_id, now = new Date().toISOString()) {
-    this.db.prepare("UPDATE canvases SET updated_at = ? WHERE canvas_id = ?").run(now, canvas_id);
+    this.db.prepare("UPDATE canvases SET revision = revision + 1, updated_at = ? WHERE canvas_id = ?").run(now, canvas_id);
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // REN-08: canvas document revision + command log
+  // ---------------------------------------------------------------------------------------------------------
+
+  /** The canvas' current document revision and timestamp. Reads, never writes. */
+  canvasRevisionOf(canvas_id) {
+    const row = this.db.prepare("SELECT canvas_id, revision, updated_at FROM canvases WHERE canvas_id = ?").get(canvas_id);
+    if (!row) throw new Error(`Canvas not found: ${canvas_id}`);
+    return { canvas_id: row.canvas_id, revision: Number(row.revision ?? 0), updated_at: row.updated_at };
+  }
+
+  /**
+   * Advance the document revision, atomically.
+   *
+   * `expected === null` is the unconditional path used by the agent tool surface (upsertShape, deleteShape, link,
+   * unlink): those callers are not participating in optimistic concurrency, and they still must move the revision
+   * forward so that a browser holding an older revision is told to resynchronise instead of silently overwriting.
+   *
+   * `expected` a number is the compare-and-bump path used by the command protocol. THE COMPARISON AND THE BUMP ARE
+   * ONE STATEMENT, which is the whole point: a read followed by a write would leave a window in which two clients
+   * each see revision N, each decide they may proceed, and each write. Here the second one updates zero rows and is
+   * reported as a conflict.
+   *
+   * Row count, not the value of `revision` afterwards, is what decides the outcome - SQLite makes a single UPDATE
+   * atomic, so "I changed a row" and "I owned that transition" are the same fact.
+   */
+  bumpCanvasRevision(canvas_id, { expected = null, now = new Date().toISOString() } = {}) {
+    if (expected === null || expected === undefined) {
+      this.db.prepare("UPDATE canvases SET revision = revision + 1, updated_at = ? WHERE canvas_id = ?").run(now, canvas_id);
+      return this.canvasRevisionOf(canvas_id);
+    }
+    const wanted = Number(expected);
+    if (!Number.isInteger(wanted) || wanted < 0) {
+      throw new CanvasCommandInvalid(`expected_revision must be a non-negative integer (got ${JSON.stringify(expected)})`, { details: { field: "expected_revision" } });
+    }
+    const result = this.db.prepare("UPDATE canvases SET revision = revision + 1, updated_at = ? WHERE canvas_id = ? AND revision = ?")
+      .run(now, canvas_id, wanted);
+    if (Number(result?.changes ?? 0) !== 1) {
+      const actual = this.canvasRevisionOf(canvas_id).revision;
+      throw new CanvasRevisionConflict(canvas_id, wanted, actual);
+    }
+    return this.canvasRevisionOf(canvas_id);
+  }
+
+  /**
+   * REN-08: the resolved editing switch. Re-resolved on every read because plugin config can be hot-reloaded, and a
+   * cached boolean would make "turn the flag off" invisible to a running process.
+   */
+  canvasEditingPolicy() {
+    return resolveCanvasEditingPolicy(this.pluginConfig);
+  }
+
+  /**
+   * Apply one canvas command against a known revision: validate, claim the revision atomically, apply the effects,
+   * record the command, and return what happened - all inside one transaction.
+   *
+   * The revision claim comes FIRST, so a conflicting command does no work at all: there is no partially applied edit
+   * to unwind, and no audit row describing a change that did not happen.
+   *
+   * The rollback switch is checked before even that, and refused HERE rather than only hidden in the interface, so
+   * that "read-only" is a property of the write path rather than of one bundle's rendering.
+   */
+  applyCanvasCommand(input = {}) {
+    this.requireDb();
+    if (!input.canvas_id) throw new CanvasCommandInvalid("canvas_id is required", { details: { field: "canvas_id" } });
+    const canvas = this.requireCanvas(input.canvas_id);
+    const editingPolicy = this.canvasEditingPolicy();
+    if (!editingPolicy.editing) {
+      const error = new CanvasCommandInvalid(`canvas editing is disabled (${editingPolicy.readOnlyReason}); the canvas is read-only and accepts no commands`, { status: 403, details: { canvas_id: canvas.canvas_id, reason: editingPolicy.readOnlyReason } });
+      error.code = "CANVAS_EDITING_DISABLED";
+      throw error;
+    }
+    const command = normalizeCanvasCommand(input.command ?? input);
+    const expected = input.expected_revision ?? input.expected_version;
+    if (expected === undefined || expected === null) {
+      throw new CanvasCommandInvalid("expected_revision is required: a command must state the revision it was composed against, otherwise a concurrent edit cannot be detected", { details: { field: "expected_revision" } });
+    }
+    const resolvedActor = this.resolveRequestActor(input);
+    const actor = this.ensureActor(resolvedActor.actor_id, resolvedActor.actor_type);
+    // A request-body actor_id is a compatibility label, not an identity. Only trusted ingress attribution may
+    // participate in an idempotency decision; unattributed/direct calls share the explicit unknown bucket.
+    const idempotencyActorId = resolvedActor.trusted ? resolvedActor.actor_id : DEFAULT_ACTOR;
+    const clientId = input.client_id === undefined || input.client_id === null ? null : String(input.client_id);
+    const commandId = input.command_id ? String(input.command_id) : id("cmd");
+
+    // Idempotency: a client that re-sends a command after a network failure (or an offline queue flushing twice) must
+    // not apply it twice. Reuse is valid only when canvas, normalized payload, and trusted actor all match; otherwise
+    // returning the old result would falsely tell the caller that a different edit was saved.
+    const existing = this.db.prepare("SELECT * FROM canvas_commands WHERE command_id = ?").get(commandId);
+    if (existing) {
+      if (existing.canvas_id !== input.canvas_id) {
+        throw new CanvasCommandIdConflict(commandId, "different_canvas", { canvas_id: existing.canvas_id, requested_canvas_id: input.canvas_id });
+      }
+      let recordedPayload;
+      try {
+        // Existing rows used ordinary JSON.stringify. Parse and canonicalize them on read so no migration is
+        // required and harmless object-key ordering differences remain valid retries.
+        recordedPayload = canonicalCanvasCommandJson(JSON.parse(existing.payload_json));
+      } catch {
+        throw new CanvasCommandIdConflict(commandId, "recorded_payload_unreadable", { canvas_id: existing.canvas_id });
+      }
+      if (recordedPayload !== canonicalCanvasCommandJson(command)) {
+        throw new CanvasCommandIdConflict(commandId, "different_payload", { canvas_id: existing.canvas_id });
+      }
+      if (existing.actor_id !== idempotencyActorId) {
+        throw new CanvasCommandIdConflict(commandId, "different_actor", { canvas_id: existing.canvas_id });
+      }
+      return { ...JSON.parse(existing.result_json || "{}"), revision: Number(existing.revision), command_id: commandId, replayed: true };
+    }
+
+    if (canvas.status === "archived") {
+      throw new CanvasCommandInvalid(`canvas ${canvas.canvas_id} is archived and accepts no edits`, { status: 409, details: { canvas_id: canvas.canvas_id } });
+    }
+
+    this.db.exec("BEGIN IMMEDIATE");
+    let claimed = null;
+    try {
+      claimed = this.bumpCanvasRevision(canvas.canvas_id, { expected });
+      const applied = this.applyCanvasCommandEffects(canvas.canvas_id, command, actor);
+      const inverse = invertCanvasCommand(command, applied.observation);
+      const now = new Date().toISOString();
+      const resultPayload = {
+        canvas_id: canvas.canvas_id,
+        command_id: commandId,
+        command_type: command.type,
+        base_revision: Number(expected),
+        revision: claimed.revision,
+        applied: applied.summary,
+        created_shape_ids: applied.observation.created_shape_ids ?? [],
+        created_edge_ids: applied.observation.created_edge_ids ?? [],
+        removed_shape_ids: applied.observation.removed_shape_ids ?? [],
+        removed_edge_ids: applied.observation.removed_edge_ids ?? [],
+        undo_commands: inverse,
+        updated_at: claimed.updated_at
+      };
+      this.db.prepare(`INSERT INTO canvas_commands (command_id, canvas_id, revision, base_revision, command_type, payload_json, inverse_json, result_json, actor_id, client_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(commandId, canvas.canvas_id, claimed.revision, Number(expected), command.type, JSON.stringify(command), JSON.stringify(inverse), JSON.stringify(resultPayload), idempotencyActorId, clientId, now);
+      this.db.exec("COMMIT");
+      return { ...resultPayload, replayed: false };
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * The effects of one command. Returns `{ summary, observation }`, where the observation is what the inverse is
+   * built from - and deliberately describes what ACTUALLY happened rather than what the payload asked for, so an
+   * inverse never claims to undo something that was a no-op.
+   */
+  applyCanvasCommandEffects(canvas_id, command, actor) {
+    switch (command.type) {
+      case "move_shapes": {
+        const previous = [];
+        const moved = [];
+        for (const entry of command.positions) {
+          const row = this.getCanvasShapeRow(entry.shape_id);
+          if (!row) throw new CanvasCommandInvalid(`shape ${entry.shape_id} is not on this canvas`, { details: { field: "positions", shape_id: entry.shape_id } });
+          if (row.canvas_id !== canvas_id) throw new CanvasCommandInvalid(`shape ${entry.shape_id} belongs to canvas ${row.canvas_id}`, { details: { shape_id: entry.shape_id } });
+          const fromX = Number(row.x);
+          const fromY = Number(row.y);
+          const changed = fromX !== entry.x || fromY !== entry.y;
+          if (changed) {
+            this.db.prepare("UPDATE canvas_shapes SET x = ?, y = ?, updated_at = ? WHERE shape_id = ?").run(entry.x, entry.y, new Date().toISOString(), entry.shape_id);
+            previous.push({ shape_id: entry.shape_id, x: fromX, y: fromY, changed: true });
+            moved.push(entry.shape_id);
+          } else {
+            previous.push({ shape_id: entry.shape_id, x: fromX, y: fromY, changed: false });
+          }
+        }
+        this.commit({ scope: "project", target_id: canvas_id, action: "canvas.shapes.move", message: describeCanvasCommand(command), actor_id: actor.actor_id, changes: { canvas_id, shape_ids: moved } });
+        return { summary: { moved_count: moved.length, shape_ids: moved }, observation: { previous } };
+      }
+      case "update_shapes": {
+        const previous = [];
+        const updated = [];
+        for (const patch of command.updates) {
+          const row = this.getCanvasShapeRow(patch.shape_id);
+          if (!row) throw new CanvasCommandInvalid(`shape ${patch.shape_id} is not on this canvas`, { details: { shape_id: patch.shape_id } });
+          if (row.canvas_id !== canvas_id) throw new CanvasCommandInvalid(`shape ${patch.shape_id} belongs to canvas ${row.canvas_id}`, { details: { shape_id: patch.shape_id } });
+          const fields = {};
+          const setClauses = [];
+          const values = [];
+          for (const key of ["x", "y", "width", "height", "rotation", "z_index", "title"]) {
+            if (patch[key] === undefined) continue;
+            const before = key === "title" ? (row.title ?? null) : Number(row[key]);
+            const after = patch[key];
+            if (before === after) continue;
+            fields[key] = before;
+            setClauses.push(`${key} = ?`);
+            values.push(after);
+          }
+          if (patch.props !== undefined) {
+            const before = JSON.parse(row.props_json || "{}");
+            fields.props = before;
+            setClauses.push("props_json = ?");
+            values.push(JSON.stringify(patch.props));
+          }
+          if (setClauses.length === 0) { previous.push({ shape_id: patch.shape_id, fields: {} }); continue; }
+          setClauses.push("updated_at = ?");
+          values.push(new Date().toISOString());
+          values.push(patch.shape_id);
+          this.db.prepare(`UPDATE canvas_shapes SET ${setClauses.join(", ")} WHERE shape_id = ?`).run(...values);
+          previous.push({ shape_id: patch.shape_id, fields });
+          updated.push(patch.shape_id);
+        }
+        this.commit({ scope: "project", target_id: canvas_id, action: "canvas.shapes.update", message: describeCanvasCommand(command), actor_id: actor.actor_id, changes: { canvas_id, shape_ids: updated } });
+        return { summary: { updated_count: updated.length, shape_ids: updated }, observation: { previous } };
+      }
+      case "create_shapes": {
+        const created = [];
+        for (const shape of command.shapes) {
+          const existing = this.getCanvasShapeRow(shape.shape_id);
+          if (existing) {
+            // Refusing rather than upserting: a create that silently overwrote an existing card would make redo
+            // destroy the card it was meant to restore, and the id would then refer to a different card than the one
+            // the client believes it is holding.
+            throw new CanvasCommandInvalid(`shape ${shape.shape_id} already exists${existing.canvas_id === canvas_id ? " on this canvas" : ` on canvas ${existing.canvas_id}`}`, { status: 409, details: { shape_id: shape.shape_id } });
+          }
+          this.upsertCanvasShape({
+            canvas_id,
+            shape_id: shape.shape_id,
+            shape_type: shape.shape_type,
+            subject_type: shape.subject_type,
+            subject_id: shape.subject_id,
+            title: shape.title,
+            x: shape.x,
+            y: shape.y,
+            width: shape.width,
+            height: shape.height,
+            rotation: shape.rotation,
+            z_index: shape.z_index,
+            props: shape.props,
+            actor_id: actor.actor_id,
+            actor_type: actor.actor_type
+          }, { deferRevisionBump: true, deferCommit: true });
+          created.push(shape.shape_id);
+        }
+        this.commit({ scope: "project", target_id: canvas_id, action: "canvas.shapes.create", message: describeCanvasCommand(command), actor_id: actor.actor_id, changes: { canvas_id, shape_ids: created } });
+        return { summary: { created_count: created.length, shape_ids: created }, observation: { created_shape_ids: created } };
+      }
+      case "delete_shapes": {
+        const removedShapes = [];
+        // DEDUPLICATED BY edge_id, and that is a correctness requirement rather than tidiness: an edge between two
+        // selected cards is found from BOTH endpoints, so collecting per shape recorded it twice. The recorded
+        // inverse then carried the same edge twice, and applying it hit the create path's own duplicate refusal -
+        // "edge X already exists" - so undoing a multi-card delete restored the cards and silently lost the edges.
+        // The refusal is what made this visible; without it one edge would have been restored and the rest dropped.
+        const removedEdges = new Map();
+        for (const shape_id of command.shape_ids) {
+          const row = this.getCanvasShapeRow(shape_id);
+          if (!row) throw new CanvasCommandInvalid(`shape ${shape_id} is not on this canvas`, { details: { shape_id } });
+          if (row.canvas_id !== canvas_id) throw new CanvasCommandInvalid(`shape ${shape_id} belongs to canvas ${row.canvas_id}`, { details: { shape_id } });
+          // The full row is kept so an undo can rebuild the card with the same id, the same subject reference and the
+          // same properties. Nothing here reads or writes an asset: removing a card removes a card.
+          removedShapes.push(row);
+          for (const edge of this.db.prepare("SELECT * FROM canvas_edges WHERE source_shape_id = ? OR target_shape_id = ?").all(shape_id, shape_id)) {
+            removedEdges.set(edge.edge_id, edge);
+          }
+        }
+        const removedEdgeRows = [...removedEdges.values()];
+        for (const shape_id of command.shape_ids) {
+          this.db.prepare("DELETE FROM canvas_edges WHERE source_shape_id = ? OR target_shape_id = ?").run(shape_id, shape_id);
+          this.db.prepare("DELETE FROM canvas_shapes WHERE shape_id = ?").run(shape_id);
+        }
+        this.commit({ scope: "project", target_id: canvas_id, action: "canvas.shapes.delete", message: describeCanvasCommand(command), actor_id: actor.actor_id, changes: { canvas_id, shape_ids: command.shape_ids, removed_edges: removedEdgeRows.length, assets_touched: 0 } });
+        return {
+          summary: { removed_count: removedShapes.length, removed_edge_count: removedEdgeRows.length, shape_ids: command.shape_ids },
+          observation: {
+            removed_shape_ids: command.shape_ids,
+            removed_shapes: removedShapes.map((row) => canvasShapeFromRow(row)),
+            removed_edges: removedEdgeRows.map((row) => canvasEdgeFromRow(row))
+          }
+        };
+      }
+      case "create_edges": {
+        const created = [];
+        for (const edge of command.edges) {
+          const existing = this.db.prepare("SELECT edge_id FROM canvas_edges WHERE edge_id = ?").get(edge.edge_id);
+          if (existing) throw new CanvasCommandInvalid(`edge ${edge.edge_id} already exists`, { status: 409, details: { edge_id: edge.edge_id } });
+          const source = this.requireCanvasShape(edge.source_shape_id);
+          const target = this.requireCanvasShape(edge.target_shape_id);
+          if (source.canvas_id !== canvas_id || target.canvas_id !== canvas_id) {
+            throw new CanvasCommandInvalid("both ends of an edge must be on this canvas", { details: { edge_id: edge.edge_id } });
+          }
+          this.linkCanvasShapes({
+            canvas_id,
+            edge_id: edge.edge_id,
+            source_shape_id: edge.source_shape_id,
+            target_shape_id: edge.target_shape_id,
+            relation_type: edge.relation_type,
+            label: edge.label,
+            props: edge.props,
+            actor_id: actor.actor_id,
+            actor_type: actor.actor_type
+          }, { deferRevisionBump: true, deferCommit: true });
+          created.push(edge.edge_id);
+        }
+        this.commit({ scope: "project", target_id: canvas_id, action: "canvas.edges.create", message: describeCanvasCommand(command), actor_id: actor.actor_id, changes: { canvas_id, edge_ids: created } });
+        return { summary: { created_count: created.length, edge_ids: created }, observation: { created_edge_ids: created } };
+      }
+      case "delete_edges": {
+        const removed = [];
+        for (const edge_id of command.edge_ids) {
+          const row = this.db.prepare("SELECT * FROM canvas_edges WHERE edge_id = ?").get(edge_id);
+          if (!row) throw new CanvasCommandInvalid(`edge ${edge_id} is not on this canvas`, { details: { edge_id } });
+          if (row.canvas_id !== canvas_id) throw new CanvasCommandInvalid(`edge ${edge_id} belongs to canvas ${row.canvas_id}`, { details: { edge_id } });
+          removed.push(row);
+        }
+        for (const edge_id of command.edge_ids) this.db.prepare("DELETE FROM canvas_edges WHERE edge_id = ?").run(edge_id);
+        this.commit({ scope: "project", target_id: canvas_id, action: "canvas.edges.delete", message: describeCanvasCommand(command), actor_id: actor.actor_id, changes: { canvas_id, edge_ids: command.edge_ids } });
+        return {
+          summary: { removed_count: removed.length, edge_ids: command.edge_ids },
+          observation: { removed_edge_ids: command.edge_ids, removed_edges: removed.map((row) => canvasEdgeFromRow(row)) }
+        };
+      }
+      /* c8 ignore next 2 */
+      default:
+        throw new CanvasCommandInvalid(`unhandled canvas command type ${command.type}`);
+    }
+  }
+
+  /**
+   * The canvas command log, newest first by default.
+   *
+   * `since_revision` and `until_revision` make the log answerable as "what happened between these two revisions",
+   * which is what the replay tool asks it and what a person asks it after a conflict.
+   */
+  listCanvasCommands(input = {}) {
+    this.requireDb();
+    if (!input.canvas_id) throw new Error("canvas_id is required");
+    this.requireCanvas(input.canvas_id);
+    const limit = Math.min(Math.max(Number(input.limit ?? 50) || 50, 1), 500);
+    const clauses = ["canvas_id = ?"];
+    const values = [input.canvas_id];
+    if (input.since_revision !== undefined && input.since_revision !== null) {
+      clauses.push("revision >= ?");
+      values.push(Number(input.since_revision));
+    }
+    if (input.until_revision !== undefined && input.until_revision !== null) {
+      clauses.push("revision <= ?");
+      values.push(Number(input.until_revision));
+    }
+    if (input.actor_id) {
+      clauses.push("actor_id = ?");
+      values.push(String(input.actor_id));
+    }
+    if (input.command_type) {
+      clauses.push("command_type = ?");
+      values.push(String(input.command_type));
+    }
+    const order = input.order === "asc" ? "ASC" : "DESC";
+    const rows = this.db.prepare(`SELECT * FROM canvas_commands WHERE ${clauses.join(" AND ")} ORDER BY revision ${order} LIMIT ?`).all(...values, limit);
+    const total = this.db.prepare("SELECT COUNT(*) AS count FROM canvas_commands WHERE canvas_id = ?").get(input.canvas_id);
+    return {
+      version: 1,
+      canvas_id: input.canvas_id,
+      revision: this.canvasRevisionOf(input.canvas_id).revision,
+      command_count: Number(total?.count ?? 0),
+      limit,
+      order: order.toLowerCase(),
+      commands: rows.map((row) => ({
+        command_id: row.command_id,
+        revision: Number(row.revision),
+        base_revision: Number(row.base_revision),
+        command_type: row.command_type,
+        command: JSON.parse(row.payload_json || "{}"),
+        inverse_commands: JSON.parse(row.inverse_json || "[]"),
+        result: JSON.parse(row.result_json || "{}"),
+        actor_id: row.actor_id,
+        client_id: row.client_id,
+        created_at: row.created_at
+      }))
+    };
+  }
+
+  /** Read wrapper so the canvas revision is available without the full document. */
+  getCanvasRevision(input = {}) {
+    this.requireDb();
+    if (!input.canvas_id) throw new Error("canvas_id is required");
+    this.requireCanvas(input.canvas_id);
+    const revision = this.canvasRevisionOf(input.canvas_id);
+    const counts = this.db.prepare("SELECT COUNT(*) AS count FROM canvas_commands WHERE canvas_id = ?").get(input.canvas_id);
+    return { version: 1, ...revision, command_count: Number(counts?.count ?? 0) };
   }
 
   canvasSummary(row) {
@@ -3765,7 +5348,7 @@ export class VideoAssetService {
     }
     if (generation_type === "voice" && !inputs.some((item) => item.slot === "audio")) warnings.push("配音生成缺少音频参考，后续需要补文本或音色输入。");
     if (generation_type === "subtitle" && !inputs.some((item) => item.slot === "audio" || item.slot === "video_clip")) errors.push("字幕生成需要音频或视频片段输入。");
-    for (const input of inputs) {
+    for (const input of generationInputItems(inputs)) {
       if (!input.asset_version_id) errors.push("画布输入缺少具体资产版本：" + (input.title ?? input.shape_id));
       if (input.pin_mode === "candidate") warnings.push("候选引用需在正式生成前确认：" + input.reference_id);
       if (input.pin_mode === "follow_latest") warnings.push("跟随最新会降低复现性，建议固定版本：" + input.reference_id);
@@ -4023,6 +5606,7 @@ function generationTypeText(value) {
     image: "图像生成",
     cover: "封面生成",
     edit: "图像编辑",
+    upscale: "图像放大",
     image_to_video: "图生视频",
     text_to_video: "文生视频",
     multimodal_to_video: "多模态视频",
@@ -4053,6 +5637,16 @@ function canvasShapeStage(shape, context = null) {
     if (PRODUCTION_CANVAS_STAGE_BY_KEY.has(key)) return key;
   }
   return "references";
+}
+
+/**
+ * 生成输入过滤：draft_output 是写回产出槽，不是生成输入。
+ * GENERATION_INPUT_SLOT_KEYS 是唯一真相源；凡带「生成输入」语义的处理（门禁校验、模型输入上限、
+ * 参考输入摘要）都必须先经过本函数，避免写回产出卡被当作下一轮生成的输入。
+ * 来源：2026-09-20 真机缺陷——同一画布连续两次生成时，写回产出卡被计入模型输入上限并触发 taxonomy 门。
+ */
+function generationInputItems(inputs) {
+  return (Array.isArray(inputs) ? inputs : []).filter((item) => GENERATION_INPUT_SLOT_KEYS.has(item?.slot));
 }
 
 function canvasGenerationSlot(shape, context = null) {
@@ -4466,6 +6060,81 @@ function generationTaskParameters(generationPackage, outputSpec) {
   };
 }
 
+// 即梦 CLI 按文件扩展名判定上传类型；而插件的内容寻址对象库均以 .blob 结尾，直接上传会被拒（
+// 实测 2026-09-20：upload image "upload phase, no file upload"）。因此在上传前把 blob 物化成
+// 带正确扩展名的缓存文件。幂等：同名目标已存在则直接复用；已知媒体扩展名则原路返回，不做多余拷贝。
+const DREAMINA_UPLOAD_KNOWN_EXTENSIONS = new Set([
+  ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".avif",
+  ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi",
+  ".mp3", ".wav", ".aac", ".m4a", ".flac", ".ogg", ".opus"
+]);
+const DREAMINA_UPLOAD_MIME_EXTENSIONS = Object.freeze({
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/jpg": ".jpg",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "image/bmp": ".bmp",
+  "image/tiff": ".tiff",
+  "image/avif": ".avif",
+  "video/mp4": ".mp4",
+  "video/quicktime": ".mov",
+  "video/webm": ".webm",
+  "audio/mpeg": ".mp3",
+  "audio/mp3": ".mp3",
+  "audio/wav": ".wav",
+  "audio/x-wav": ".wav",
+  "audio/aac": ".aac",
+  "audio/mp4": ".m4a",
+  "audio/flac": ".flac",
+  "audio/ogg": ".ogg"
+});
+
+function dreaminaUploadExtensionFromMagic(filePath) {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    const buffer = Buffer.alloc(16);
+    const read = fs.readSync(fd, buffer, 0, 16, 0);
+    fs.closeSync(fd);
+    if (read < 12) return null;
+    const hex = buffer.subarray(0, 12).toString("hex").toUpperCase();
+    if (hex.startsWith("89504E47")) return ".png";
+    if (hex.startsWith("FFD8FF")) return ".jpg";
+    if (hex.startsWith("47494638")) return ".gif";
+    if (hex.startsWith("52494646") && buffer.subarray(8, 12).toString("ascii") === "WEBP") return ".webp";
+    if (hex.startsWith("424D")) return ".bmp";
+    if (hex.startsWith("49492A00") || hex.startsWith("4D4D002A")) return ".tiff";
+    if (buffer.subarray(4, 8).toString("ascii") === "ftyp") return ".mp4";
+    if (hex.startsWith("52494646") && buffer.subarray(8, 12).toString("ascii") === "WAVE") return ".wav";
+    if (hex.startsWith("FFFB") || hex.startsWith("FFF3") || hex.startsWith("494433")) return ".mp3";
+    if (hex.startsWith("4F676753")) return ".ogg";
+    if (hex.startsWith("664C6143")) return ".flac";
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function materializeDreaminaUploadFile(item) {
+  const source = typeof item === "string" ? item : item?.file_path;
+  if (!source) return null;
+  const currentExt = path.extname(source).toLowerCase();
+  if (DREAMINA_UPLOAD_KNOWN_EXTENSIONS.has(currentExt)) return source;
+  if (!fs.existsSync(source)) return source;
+  const mimeExt = DREAMINA_UPLOAD_MIME_EXTENSIONS[String(item?.mime_type ?? "").toLowerCase()] ?? null;
+  const ext = mimeExt ?? dreaminaUploadExtensionFromMagic(source) ?? ".bin";
+  const uploadDir = path.join(os.tmpdir(), "openclaw-video-assets-dreamina-uploads");
+  try {
+    fs.mkdirSync(uploadDir, { recursive: true });
+    const base = path.basename(source, currentExt).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 48) || "upload";
+    const target = path.join(uploadDir, `${base}${ext}`);
+    if (!fs.existsSync(target)) fs.copyFileSync(source, target);
+    return target;
+  } catch {
+    return source;
+  }
+}
+
 function dreaminaCliHandoff({ generation_type, outputSpec, inputs, parameters }) {
   const provider = {
     provider_id: "dreamina_cli",
@@ -4480,28 +6149,54 @@ function dreaminaCliHandoff({ generation_type, outputSpec, inputs, parameters })
   const prompt = dreaminaPromptText(parameters);
   const ratio = normalizeDreaminaRatio(outputSpec.aspect_ratio);
   const resolutionType = dreaminaImageResolutionType(outputSpec);
+  const requestedModel = parameters?.model_version ? String(parameters.model_version).trim() : null;
+  const requestedResolution = parameters?.resolution_type ? String(parameters.resolution_type).trim() : null;
+  const requestedGenerateNum = parameters?.generate_num ?? null;
+  const videoModel = requestedModel ?? "seedance2.0fast";
+  let imageConfig = null;
   const primaryImage = firstResolvedInput(inputs, ["main_reference", "character_reference", "scene_reference", "style_reference"], "image");
   const motionVideo = firstResolvedInput(inputs, ["motion_reference", "video_clip"], "video");
   const audio = firstResolvedInput(inputs, ["audio"], "audio");
   const blockers = [];
   let command = null;
 
-  if (["image", "cover"].includes(generation_type)) {
-    command = {
-      kind: "text2image",
-      argv: compactArgs([provider.executable, "text2image", "--prompt", prompt, "--ratio", ratio, "--resolution_type", resolutionType, "--poll", "120"])
-    };
+  if (DREAMINA_IMAGE_GENERATION_TYPES.includes(generation_type)) {
+    imageConfig = dreaminaImageConfig({
+      generation_type,
+      outputSpec,
+      model_version: requestedModel,
+      resolution_type: requestedResolution,
+      generate_num: requestedGenerateNum,
+      ratio: outputSpec.aspect_ratio,
+      poll: 120
+    });
+    if (generation_type === "edit") {
+      if (!primaryImage?.file_path) blockers.push("编辑生成需要一个可解析到本机文件路径的图像输入。");
+      if (primaryImage?.file_path) {
+        command = {
+          kind: "image2image",
+          argv: dreaminaImageArgv({ executable: provider.executable, imageConfig, prompt, image: primaryImage }),
+          image_config: imageConfig
+        };
+      }
+    } else {
+      command = {
+        kind: "text2image",
+        argv: dreaminaImageArgv({ executable: provider.executable, imageConfig, prompt }),
+        image_config: imageConfig
+      };
+    }
   } else if (generation_type === "text_to_video") {
-    const videoConfig = dreaminaVideoConfig({ generation_type, ratio, duration: 5, model_version: "seedance2.0fast", video_resolution: "720p", poll: 180 });
+    const videoConfig = dreaminaVideoConfig({ generation_type, ratio, duration: 5, model_version: videoModel, video_resolution: "720p", poll: 180 });
     command = {
       kind: "text2video",
       argv: dreaminaVideoArgv({ executable: provider.executable, generation_type, prompt, videoConfig })
     };
   } else if (generation_type === "multimodal_to_video") {
-    const multimodal = dreaminaMultimodalInputs(inputs);
+    const multimodal = dreaminaMultimodalInputs(inputs, { model_version: videoModel });
     blockers.push(...multimodal.blockers);
     if (!multimodal.blockers.length) {
-      const videoConfig = dreaminaVideoConfig({ generation_type, ratio, duration: 5, model_version: "seedance2.0fast", video_resolution: "720p", poll: 180 });
+      const videoConfig = dreaminaVideoConfig({ generation_type, ratio, duration: 5, model_version: videoModel, video_resolution: "720p", poll: 180 });
       command = {
         kind: "multimodal2video",
         argv: dreaminaVideoArgv({ executable: provider.executable, generation_type, multimodal, prompt, videoConfig })
@@ -4510,18 +6205,10 @@ function dreaminaCliHandoff({ generation_type, outputSpec, inputs, parameters })
   } else if (generation_type === "image_to_video") {
     if (!primaryImage?.file_path) blockers.push("图生视频需要一个可解析到本机文件路径的图像输入。");
     if (primaryImage?.file_path) {
-      const videoConfig = dreaminaVideoConfig({ generation_type, duration: 5, model_version: "seedance2.0fast", video_resolution: "720p", poll: 180 });
+      const videoConfig = dreaminaVideoConfig({ generation_type, duration: 5, model_version: videoModel, video_resolution: "720p", poll: 180 });
       command = {
         kind: "image2video",
-        argv: dreaminaVideoArgv({ executable: provider.executable, generation_type, image: primaryImage.file_path, prompt, videoConfig })
-      };
-    }
-  } else if (generation_type === "edit") {
-    if (!primaryImage?.file_path) blockers.push("编辑生成需要一个可解析到本机文件路径的图像输入。");
-    if (primaryImage?.file_path) {
-      command = {
-        kind: "image2image",
-        argv: compactArgs([provider.executable, "image2image", "--images", primaryImage.file_path, "--prompt", prompt, "--ratio", ratio, "--model_version", "5.0", "--poll", "120"])
+        argv: dreaminaVideoArgv({ executable: provider.executable, generation_type, image: primaryImage, prompt, videoConfig })
       };
     }
   } else if (generation_type === "export") {
@@ -4543,6 +6230,7 @@ function dreaminaCliHandoff({ generation_type, outputSpec, inputs, parameters })
       { name: "login_if_needed", label: "必要时登录", argv: provider.login_command, required: true }
     ],
     command,
+    image_config: imageConfig,
     postprocess: {
       register_outputs_with: "素材入库工具",
       link_outputs_to_canvas_with: "画布卡片写回工具",
@@ -4552,7 +6240,7 @@ function dreaminaCliHandoff({ generation_type, outputSpec, inputs, parameters })
         generator: command?.kind ?? null,
         prompt,
         ratio,
-        resolution_type: resolutionType,
+        resolution_type: imageConfig?.resolution_type ?? resolutionType,
         motion_reference_file: motionVideo?.file_path ?? null,
         audio_reference_file: audio?.file_path ?? null
       }
@@ -4568,15 +6256,23 @@ function dreaminaVideoConfig(input = {}) {
   const duration = normalizeDreaminaVideoDuration(generation_type, model_version, input.duration);
   const video_resolution = normalizeDreaminaVideoResolution(model_version, input.video_resolution);
   const ratio = ["text_to_video", "multimodal_to_video"].includes(generation_type) ? normalizeDreaminaVideoRatio(input.ratio) : null;
-  const poll = clampInteger(input.poll ?? 180, 0, 600, "poll");
+  // REN-11 fix round (D3): submit asynchronously by default (`--poll 0`). The CLI's blocking poll is
+  // unreliable on a real machine - observed on 2026-09-25: `--poll 600` returned
+  // `get_history_by_ids failed: ret=1015` with EMPTY stdout while the provider had already accepted
+  // and charged the job, so the tool could neither report the result nor keep the submit id.
+  // An explicit `poll > 0` still opts into the old blocking behaviour.
+  const poll = clampInteger(input.poll ?? DREAMINA_CLI_ASYNC_POLL_SECONDS, 0, 600, "poll");
   const session = input.session === undefined || input.session === null || input.session === "" ? null : clampInteger(input.session, 0, 2147483647, "session");
   return { model_version, duration, video_resolution, ratio, poll, session };
 }
 
 function normalizeDreaminaVideoModel(generation_type, value) {
   const fallback = "seedance2.0fast";
-  const model = String(value ?? fallback).trim();
-  const allowed = ["text_to_video", "multimodal_to_video"].includes(generation_type) ? DREAMINA_TEXT2VIDEO_MODELS : DREAMINA_IMAGE2VIDEO_MODELS;
+  const raw = String(value ?? fallback).trim();
+  const model = DREAMINA_VIDEO_MODEL_VALUES.find((item) => item.toLowerCase() === raw.toLowerCase()) ?? raw;
+  const allowed = generation_type === "text_to_video"
+    ? DREAMINA_TEXT2VIDEO_MODELS
+    : (generation_type === "multimodal_to_video" ? DREAMINA_MULTIMODAL2VIDEO_MODELS : DREAMINA_IMAGE2VIDEO_MODELS);
   if (!allowed.has(model)) {
     throw new Error(`${generation_type} model_version must be one of: ${[...allowed].join(", ")}`);
   }
@@ -4585,26 +6281,22 @@ function normalizeDreaminaVideoModel(generation_type, value) {
 
 function normalizeDreaminaVideoDuration(generation_type, model_version, value) {
   const duration = clampInteger(value ?? 5, 1, 30, "duration");
-  let min = 4;
-  let max = 15;
-  if (generation_type === "image_to_video") {
-    if (["3.0", "3.0fast", "3.0pro", "3.0_fast", "3.0_pro"].includes(model_version)) {
-      min = 3;
-      max = 10;
-    } else if (["3.5pro", "3.5_pro"].includes(model_version)) {
-      min = 4;
-      max = 12;
-    }
-  }
+  const spec = DREAMINA_VIDEO_MODEL_SPECS[model_version];
+  const [min, max] = spec?.duration ?? [4, 15];
   if (duration < min || duration > max) throw new Error(`${generation_type} duration for ${model_version} must be ${min}-${max} seconds`);
   return duration;
 }
 
 function normalizeDreaminaVideoResolution(model_version, value) {
+  const spec = DREAMINA_VIDEO_MODEL_SPECS[model_version];
+  const allowed = spec?.resolutions ?? Object.freeze(["720p"]);
   const resolution = String(value ?? "720p").trim();
-  if (!DREAMINA_VIDEO_RESOLUTIONS.has(resolution)) throw new Error("video_resolution must be 720p or 1080p");
-  if (resolution === "1080p" && model_version !== "seedance2.0_vip") {
-    throw new Error("video_resolution 1080p is only supported by model_version seedance2.0_vip");
+  if (!DREAMINA_VIDEO_RESOLUTIONS.has(resolution)) {
+    throw new Error(`video_resolution must be one of: ${[...DREAMINA_VIDEO_RESOLUTIONS].join(", ")}`);
+  }
+  if (!allowed.includes(resolution)) {
+    const supporting = DREAMINA_VIDEO_MODEL_VALUES.filter((model) => DREAMINA_VIDEO_MODEL_SPECS[model].resolutions.includes(resolution));
+    throw new Error(`video_resolution ${resolution} is only supported by model_version ${supporting.join(", ")}`);
   }
   return resolution;
 }
@@ -4633,9 +6325,9 @@ function dreaminaVideoArgv({ executable, generation_type, image = null, multimod
     return compactArgs([
       executable,
       "multimodal2video",
-      ...multimodal.images.flatMap((item) => ["--image", item.file_path]),
-      ...multimodal.videos.flatMap((item) => ["--video", item.file_path]),
-      ...multimodal.audios.flatMap((item) => ["--audio", item.file_path]),
+      ...multimodal.images.flatMap((item) => ["--image", materializeDreaminaUploadFile(item)]),
+      ...multimodal.videos.flatMap((item) => ["--video", materializeDreaminaUploadFile(item)]),
+      ...multimodal.audios.flatMap((item) => ["--audio", materializeDreaminaUploadFile(item)]),
       "--prompt", prompt,
       "--duration", String(videoConfig.duration),
       "--ratio", videoConfig.ratio,
@@ -4648,7 +6340,7 @@ function dreaminaVideoArgv({ executable, generation_type, image = null, multimod
   return compactArgs([
     executable,
     "image2video",
-    "--image", image,
+    "--image", materializeDreaminaUploadFile(image),
     "--prompt", prompt,
     "--duration", String(videoConfig.duration),
     "--video_resolution", videoConfig.video_resolution,
@@ -4669,10 +6361,10 @@ function dreaminaVideoCommandFromHandoff({ handoff, generation_type, prompt, vid
   if (generation_type === "image_to_video") {
     if (!primaryImage?.file_path) blockers.push("图生视频需要一个可解析到本机文件路径的图像输入。");
     if (primaryImage?.file_path) {
-      argv = dreaminaVideoArgv({ executable: provider.executable, generation_type, image: primaryImage.file_path, prompt: finalPrompt, videoConfig });
+      argv = dreaminaVideoArgv({ executable: provider.executable, generation_type, image: primaryImage, prompt: finalPrompt, videoConfig });
     }
   } else if (generation_type === "multimodal_to_video") {
-    const multimodal = dreaminaMultimodalInputs(inputs);
+    const multimodal = dreaminaMultimodalInputs(inputs, { model_version: videoConfig.model_version });
     blockers.push(...multimodal.blockers);
     if (!multimodal.blockers.length) {
       argv = dreaminaVideoArgv({ executable: provider.executable, generation_type, multimodal, prompt: finalPrompt, videoConfig });
@@ -4687,13 +6379,111 @@ function dreaminaVideoCommandFromHandoff({ handoff, generation_type, prompt, vid
     dry_run: true,
     submit_policy: "真实执行前必须明确接受积分消耗。"
   } : null;
-  return { prompt: finalPrompt, command, blockers, reference_inputs: generation_type === "multimodal_to_video" ? dreaminaMultimodalInputs(inputs).summary : null };
+  return { prompt: finalPrompt, command, blockers, reference_inputs: generation_type === "multimodal_to_video" ? dreaminaMultimodalInputs(inputs, { model_version: videoConfig.model_version }).summary : null };
+}
+
+function dreaminaImageCommandFromHandoff({ handoff, generation_type, prompt, imageConfig }) {
+  const provider = handoff.task.providers.dreamina_cli;
+  const inputs = handoff.task.inputs ?? [];
+  const finalPrompt = String(prompt ?? dreaminaPromptText(handoff.task.parameters)).trim();
+  const blockers = [];
+  if (!finalPrompt) blockers.push("即梦图像生成需要提示词。");
+  const primaryImage = firstResolvedInput(inputs, ["main_reference", "character_reference", "scene_reference", "style_reference"], "image");
+  let argv = null;
+  if (imageConfig.cli_kind === "image2image") {
+    if (!primaryImage?.file_path) blockers.push("图像编辑（图生图）需要一个可解析到本机文件路径的图像输入。");
+    if (primaryImage?.file_path) {
+      argv = dreaminaImageArgv({ executable: provider.executable, imageConfig, prompt: finalPrompt, image: primaryImage });
+    }
+  } else {
+    argv = dreaminaImageArgv({ executable: provider.executable, imageConfig, prompt: finalPrompt });
+  }
+  const command = argv ? {
+    kind: imageConfig.cli_kind,
+    argv,
+    shell: dreaminaShellCommand(argv),
+    dry_run: true
+  } : null;
+  return {
+    command,
+    prompt: finalPrompt,
+    reference_inputs: primaryImage ? [primaryImage.file_path].filter(Boolean) : [],
+    blockers,
+    image_config: imageConfig
+  };
+}
+
+function extractDreaminaImages(result) {
+  const images = [];
+  const push = (item) => {
+    if (!item) return;
+    if (typeof item === "string") {
+      images.push({ url: item, width: null, height: null });
+      return;
+    }
+    const url = item.image_url ?? item.url ?? item.download_url ?? item.large_image_url ?? item.result_url ?? item.cover_url ?? null;
+    if (url) images.push({ url, width: item.width ?? null, height: item.height ?? null });
+  };
+  const resultJson = result?.result_json ?? result?.data ?? result ?? {};
+  if (Array.isArray(resultJson.images)) resultJson.images.forEach(push);
+  if (Array.isArray(resultJson.image_list)) resultJson.image_list.forEach(push);
+  if (resultJson.image) push(resultJson.image);
+  return images;
+}
+
+function resolveDreaminaImageOutputDir(value, root = process.cwd()) {
+  if (value) return path.resolve(String(value));
+  const stamp = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+  return path.join(root, "output", `dreamina-cli-image-${stamp}`);
+}
+
+function dreaminaImageDownloadName({ submit_id, index, url }) {
+  const urlPath = (() => {
+    try {
+      return new URL(url).pathname;
+    } catch {
+      return "";
+    }
+  })();
+  const ext = path.extname(urlPath).toLowerCase() || ".png";
+  const safeSubmit = String(submit_id ?? "dreamina-image").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || "dreamina-image";
+  return `${safeSubmit}-${index + 1}${ext}`;
+}
+
+function dreaminaCliImageNextActions({ parsed, downloads, registered_assets, outputDir, submission = null }) {
+  if (!parsed) return ["检查原始输出、错误输出和即梦命令行日志。"];
+  if (parsed.gen_status === "querying") return [`保存提交编号 ${parsed.submit_id}，后续查询结果；不要重复提交。`, `下载完成结果时使用输出目录：${outputDir}。`];
+  if (parsed.gen_status === "success") return [
+    downloads.length ? `已下载 ${downloads.length} 个图像文件。` : "没有下载到图像地址，请检查命令结果。",
+    registered_assets.length ? `已登记 ${registered_assets.length} 个工作素材。` : "下游使用前请先登记下载后的图像文件。",
+    "将画布视为可交接前，请先执行画布生产就绪检查。"
+  ];
+  if (submission?.reconcile_required) {
+    return [
+      submission.submit_id ? `提交编号 ${submission.submit_id} 已保留；仅只读查询，不要重新提交。` : "未取得提交编号：按 submission.reconciliation 的只读步骤对账，不要重新提交。",
+      ...(submission.reconciliation?.steps ?? []).map((step) => `${step.purpose}：${step.argv.join(" ")}`)
+    ];
+  }
+  return ["生成未报告成功，请检查命令结果、错误输出和即梦日志目录。"];
 }
 
 function runDreaminaCli(args, { timeoutMs = 180000 } = {}) {
   return new Promise((resolve, reject) => {
     execFile(DEFAULT_DREAMINA_CLI_PATH || "dreamina", args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) {
+        // REN-11 fix round (D3): attach the raw channels structurally. The message keeps them for a
+        // human reader, but a caller that has to decide "the provider refused these parameters" vs
+        // "the call produced no answer (and may have been charged)" cannot parse a prose blob.
+        error.provider_cli = {
+          executable: DEFAULT_DREAMINA_CLI_PATH || "dreamina",
+          argv: args,
+          exit_code: typeof error.code === "number" ? error.code : null,
+          killed: error.killed === true,
+          signal: error.signal ?? null,
+          timed_out: error.killed === true,
+          stdout: String(stdout ?? ""),
+          stderr: String(stderr ?? "")
+        };
         error.message = `${error.message}\nstdout:\n${stdout}\nstderr:\n${stderr}`;
         reject(error);
         return;
@@ -4714,6 +6504,141 @@ function parseDreaminaJson(stdout) {
     if (start >= 0 && end > start) return JSON.parse(text.slice(start, end + 1));
     throw new Error("即梦命令行输出中没有可解析的结果数据。");
   }
+}
+
+/** Non-throwing variant: used where "there was no JSON at all" is itself the finding. */
+function tryParseDreaminaJson(stdout) {
+  try {
+    return parseDreaminaJson(stdout);
+  } catch {
+    return null;
+  }
+}
+
+function clipText(value, limit = 600) {
+  const text = String(value ?? "");
+  return text.length > limit ? `${text.slice(0, limit)}…[truncated ${text.length - limit} chars]` : text;
+}
+
+/**
+ * Read-only reconciliation instructions for a submission whose outcome is unknown.
+ *
+ * Stated as commands on purpose: the point of the exercise is that no one re-submits (a second submit
+ * is a second charge) while the first submission may be sitting in the provider's queue.
+ */
+function dreaminaCliReconcilePlan({ submit_id = null, command_kind = null } = {}) {
+  const executable = DEFAULT_DREAMINA_CLI_PATH || "dreamina";
+  return {
+    why: "提交结果未知时必须只读对账；禁止重复提交（重复提交会二次计费）。",
+    read_only: true,
+    steps: submit_id
+      ? [{ argv: [executable, "query_result", "--submit_id", submit_id], read_only: true, purpose: "按提交编号取回终态与产物地址" }]
+      : [
+        { argv: [executable, "list_task", "--gen_status=success"], read_only: true, purpose: "核对本机/供应商侧是否已有本次任务记录" },
+        { argv: [executable, "user_credit"], read_only: true, purpose: "核对余额是否已被扣减（判断是否已受理）" }
+      ],
+    note: submit_id
+      ? "按 submit_id 只读查询；若仍为 querying，稍后重查，不要重新提交。"
+      : `无 submit_id：用 list_task 比对 ${command_kind ?? "本次命令"} 的参数与时间点，并用 user_credit 核对是否已扣费；两者任一命中即转人工对账，绝不自动重提。`,
+    accounting_command: [executable, "user_credit"]
+  };
+}
+
+/**
+ * Tell "the provider refused these parameters" apart from "the call produced no answer".
+ *
+ * Both used to surface as one indistinguishable failure, so an operator could not tell whether money had
+ * been spent. The real-machine observation this is built on (2026-09-25): a blocking poll exited with
+ * `get_history_by_ids failed: ret=1015`, EMPTY stdout, and 8 credits already charged - i.e. exactly the
+ * "no answer after acceptance" case that must be reported as unknown-and-maybe-charged.
+ */
+function classifyDreaminaCliFailure({ error = null, parsed = null, stdout = null, stderr = null, exit_code = null, timed_out = null, command_kind = null } = {}) {
+  const cli = error?.provider_cli ?? {};
+  const stdoutText = stdout ?? cli.stdout ?? "";
+  const stderrText = stderr ?? cli.stderr ?? "";
+  const body = parsed ?? tryParseDreaminaJson(stdoutText);
+  const originalMessage = error instanceof Error ? error.message : (error ? String(error) : null);
+  const submitId = typeof body?.submit_id === "string" && body.submit_id.trim() ? body.submit_id.trim() : null;
+  const timeout = timed_out ?? cli.timed_out === true;
+  const exitCode = exit_code ?? (typeof cli.exit_code === "number" ? cli.exit_code : null);
+  const failureClass = body && !submitId
+    ? "local_rejection"
+    : (timeout || !body ? "transport_failure" : "provider_reported_failure");
+  const detail = failureClass === "local_rejection"
+    ? `命令行可解析地拒绝了本次请求（本地参数层，未产生 submit_id）：${body.fail_reason ?? body.gen_status ?? "no reason"}`
+    : (failureClass === "transport_failure"
+      ? (timeout ? "命令行为完成即被终止（超时），本次提交是否被受理未知" : "命令行未返回可解析的 JSON，无法判定提交是否被受理")
+      : `供应商已受理本次提交但任务终态为失败：${body.fail_reason ?? body.gen_status ?? "fail"}`);
+  return {
+    class: failureClass,
+    code: failureClass === "local_rejection"
+      ? "GENERATION_PROVIDER_PROTOCOL"
+      : (failureClass === "provider_reported_failure" ? "GENERATION_PROVIDER_REPORTED_FAILURE" : "GENERATION_CLI_TRANSPORT_FAILURE"),
+    submit_id: submitId,
+    exit_code: exitCode,
+    timed_out: timeout,
+    message: `即梦命令行调用未产生可用结果（${failureClass}）：${detail}${originalMessage ? `｜底层错误：${clipText(originalMessage, 300)}` : ""}`,
+    details: {
+      failure_class: failureClass,
+      provider: "dreamina_cli",
+      command_kind,
+      submit_id: submitId,
+      exit_code: exitCode,
+      timed_out: timeout,
+      // The underlying error text stays attached: a wrapper that replaces the provider's own message
+      // makes the failure harder to place, not easier.
+      original_error: originalMessage ? clipText(originalMessage, 600) : null,
+      stdout_excerpt: clipText(stdoutText),
+      stderr_excerpt: clipText(stderrText),
+      provider_response: body ?? null,
+      submission_may_have_been_accepted: failureClass !== "local_rejection",
+      reconcile_required: failureClass === "transport_failure",
+      reconciliation: failureClass === "transport_failure" ? dreaminaCliReconcilePlan({ submit_id: submitId, command_kind }) : null
+    }
+  };
+}
+
+/**
+ * Converge an accepted submission with READ-ONLY `query_result` calls.
+ *
+ * Bounded on purpose: a never-finishing job must not turn into an unbounded sequence of provider calls,
+ * and this function never re-submits - so an unresolved submission keeps its id for reconciliation
+ * instead of being paid for twice. A query that throws stops the loop (a failed call also closes the
+ * gateway authorization, so continuing would only produce refusals).
+ */
+async function convergeDreaminaSubmission({ query, maxQueries = DREAMINA_CLI_MAX_QUERIES, intervalMs = DREAMINA_CLI_QUERY_INTERVAL_MS, sleep = null }) {
+  const wait = sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const attempts = [];
+  let parsed = null;
+  let lastError = null;
+  let status = "unknown";
+  for (let attempt = 1; attempt <= maxQueries; attempt += 1) {
+    try {
+      const call = await query();
+      parsed = tryParseDreaminaJson(call.stdout);
+      status = parsed?.gen_status ?? "unparsable";
+      attempts.push({ attempt, gen_status: status, submit_id: parsed?.submit_id ?? null });
+      if (status === "success" || status === "fail") break;
+    } catch (error) {
+      lastError = clipText(String(error?.message ?? error), 300);
+      attempts.push({ attempt, error: lastError });
+      status = "query_failed";
+      break;
+    }
+    if (attempt < maxQueries) await wait(intervalMs);
+  }
+  const terminal = status === "success" || status === "fail";
+  return {
+    strategy: "read_only_query_result",
+    read_only: true,
+    resubmitted: false,
+    terminal,
+    status,
+    queries: attempts.filter((item) => !item.error).length,
+    attempts,
+    last_error: lastError,
+    parsed
+  };
 }
 
 function extractDreaminaVideos(result) {
@@ -4803,15 +6728,43 @@ function dreaminaVideoDownloadName({ submit_id, index, url }) {
   return `${safeSubmit}-${index + 1}${ext}`;
 }
 
-async function downloadUrl(url, targetPath) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`download failed ${response.status} ${response.statusText}: ${url}`);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (!buffer.length) throw new Error(`downloaded file is empty: ${url}`);
-  await fs.promises.writeFile(targetPath, buffer, { flag: "wx" });
+async function downloadUrl(url, targetPath, { timeoutMs = DREAMINA_DOWNLOAD_TIMEOUT_MS, attempts = DREAMINA_DOWNLOAD_ATTEMPTS, fetchImpl = null, sleep = null } = {}) {
+  // REN-11 fix round (D4): the old body was a bare `fetch(url)`. A single signed-object response that
+  // hung took down an already-paid tool call with an undici BodyTimeoutError and no retry. Each attempt
+  // now has a hard timeout, a bounded retry, and a partial file that never becomes the final target.
+  const doFetch = fetchImpl ?? globalThis.fetch;
+  const wait = sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  // Guard the bounds themselves: a caller passing 0/negative/NaN must not turn into "no attempt at all"
+  // (a zero timeout would otherwise abort every request instantly and report zero attempts).
+  const perAttemptMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0 ? Number(timeoutMs) : DREAMINA_DOWNLOAD_TIMEOUT_MS;
+  const maxAttempts = Number.isFinite(Number(attempts)) && Number(attempts) > 0 ? Math.trunc(Number(attempts)) : DREAMINA_DOWNLOAD_ATTEMPTS;
+  if (fs.existsSync(targetPath)) throw new Error(`download target already exists: ${targetPath}`);
+  const tried = [];
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const partial = `${targetPath}.part-${process.pid}-${attempt}`;
+    try {
+      const response = await doFetch(url, { signal: AbortSignal.timeout(perAttemptMs), redirect: "follow" });
+      if (!response.ok) throw new Error(`download failed ${response.status} ${response.statusText}: ${url}`);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (!buffer.length) throw new Error(`downloaded file is empty: ${url}`);
+      await fs.promises.writeFile(partial, buffer, { flag: "w" });
+      await fs.promises.rename(partial, targetPath);
+      return { path: targetPath, bytes: buffer.length, attempts: tried.length + 1, detailed_attempts: tried };
+    } catch (error) {
+      lastError = error;
+      tried.push({ attempt, timeout_ms: perAttemptMs, error: clipText(String(error?.message ?? error), 300) });
+      await fs.promises.rm(partial, { force: true });
+      if (attempt < maxAttempts) await wait(500 * attempt);
+    }
+  }
+  const failure = new Error(`provider media download failed after ${tried.length} attempt(s) (${perAttemptMs}ms each): ${url}`);
+  failure.code = "DREAMINA_DOWNLOAD_FAILED";
+  failure.details = { url, target: targetPath, timeout_ms: perAttemptMs, attempts: tried, cause: clipText(String(lastError?.message ?? lastError), 300) };
+  throw failure;
 }
 
-function dreaminaCliGenerationNextActions({ parsed, downloads, registered_assets, outputDir }) {
+function dreaminaCliGenerationNextActions({ parsed, downloads, registered_assets, outputDir, submission = null }) {
   if (!parsed) return ["检查原始输出、错误输出和即梦命令行日志。"];
   if (parsed.gen_status === "querying") return [`保存提交编号 ${parsed.submit_id}，后续查询结果；不要重复提交。`, `下载完成结果时使用输出目录：${outputDir}。`];
   if (parsed.gen_status === "success") return [
@@ -4819,6 +6772,12 @@ function dreaminaCliGenerationNextActions({ parsed, downloads, registered_assets
     registered_assets.length ? `已登记 ${registered_assets.length} 个工作素材。` : "下游使用前请先登记下载后的视频文件。",
     "将画布视为可交接前，请先执行画布生产就绪检查。"
   ];
+  if (submission?.reconcile_required) {
+    return [
+      submission.submit_id ? `提交编号 ${submission.submit_id} 已保留；仅只读查询，不要重新提交。` : "未取得提交编号：按 submission.reconciliation 的只读步骤对账，不要重新提交。",
+      ...(submission.reconciliation?.steps ?? []).map((step) => `${step.purpose}：${step.argv.join(" ")}`)
+    ];
+  }
   return ["生成未报告成功，请检查命令结果、错误输出和即梦日志目录。"];
 }
 
@@ -4933,19 +6892,28 @@ function dreaminaPromptText(parameters) {
   return parts.join("\n");
 }
 
-function dreaminaMultimodalInputs(inputs) {
-  const usable = inputs.filter((item) => item.file_path);
-  const images = usable.filter((item) => mediaKindFromVersionLike(item) === "image").slice(0, 9);
-  const videos = usable.filter((item) => mediaKindFromVersionLike(item) === "video").slice(0, 3);
-  const audios = usable.filter((item) => mediaKindFromVersionLike(item) === "audio").slice(0, 3);
+function dreaminaMultimodalInputs(inputs, { model_version = null } = {}) {
+  const limits = DREAMINA_VIDEO_MODEL_SPECS[model_version]?.multimodal_limits ?? DREAMINA_MULTIMODAL_LIMITS_2X;
+  const modelLabel = model_version ?? "seedance2.0fast";
+  const usable = generationInputItems(inputs).filter((item) => item.file_path);
+  const imageInputs = usable.filter((item) => mediaKindFromVersionLike(item) === "image");
+  const videoInputs = usable.filter((item) => mediaKindFromVersionLike(item) === "video");
+  const audioInputs = usable.filter((item) => mediaKindFromVersionLike(item) === "audio");
+  const images = imageInputs.slice(0, limits.image);
+  const videos = videoInputs.slice(0, limits.video);
+  const audios = audioInputs.slice(0, limits.audio);
   const blockers = [];
-  if (!images.length && !videos.length) blockers.push("multimodal_to_video requires at least one image or video input with a resolvable local file_path");
-  if (usable.filter((item) => mediaKindFromVersionLike(item) === "image").length > 9) blockers.push("multimodal_to_video supports at most 9 image inputs");
-  if (usable.filter((item) => mediaKindFromVersionLike(item) === "video").length > 3) blockers.push("multimodal_to_video supports at most 3 video inputs");
-  if (usable.filter((item) => mediaKindFromVersionLike(item) === "audio").length > 3) blockers.push("multimodal_to_video supports at most 3 audio inputs");
+  if (!images.length && !videos.length && !(limits.audio_only && audios.length)) {
+    blockers.push("multimodal_to_video requires at least one image or video input with a resolvable local file_path");
+  }
+  if (imageInputs.length > limits.image) blockers.push(`multimodal_to_video supports at most ${limits.image} image inputs for model ${modelLabel}`);
+  if (videoInputs.length > limits.video) blockers.push(`multimodal_to_video supports at most ${limits.video} video inputs for model ${modelLabel}`);
+  if (audioInputs.length > limits.audio) blockers.push(`multimodal_to_video supports at most ${limits.audio} audio inputs for model ${modelLabel}`);
+  if (usable.length > limits.total) blockers.push(`multimodal_to_video supports at most ${limits.total} total inputs for model ${modelLabel}`);
+  const [mediaMinMs, mediaMaxMs] = [limits.media_duration[0] * 1000, limits.media_duration[1] * 1000];
   for (const audio of audios) {
-    if (Number.isFinite(audio.duration_ms) && (audio.duration_ms < 2000 || audio.duration_ms > 15000)) {
-      blockers.push(`multimodal_to_video audio input must be 2-15 seconds: ${audio.title ?? audio.asset_version_id}`);
+    if (Number.isFinite(audio.duration_ms) && (audio.duration_ms < mediaMinMs || audio.duration_ms > mediaMaxMs)) {
+      blockers.push(`multimodal_to_video audio input must be ${limits.media_duration[0]}-${limits.media_duration[1]} seconds for model ${modelLabel}: ${audio.title ?? audio.asset_version_id}`);
     }
   }
   const summarize = (item) => ({
@@ -4990,11 +6958,107 @@ function normalizeDreaminaRatio(aspectRatio) {
   return ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"].includes(ratio) ? ratio : "16:9";
 }
 
-function dreaminaImageResolutionType(outputSpec) {
+function normalizeDreaminaImageModel(cli_kind, value) {
+  const raw = String(value ?? DREAMINA_IMAGE_DEFAULT_MODEL).trim();
+  const model = DREAMINA_IMAGE_MODEL_VALUES.find((item) => item.toLowerCase() === raw.toLowerCase()) ?? raw;
+  const allowed = cli_kind === "image2image" ? DREAMINA_IMAGE2IMAGE_MODELS : DREAMINA_TEXT2IMAGE_MODELS;
+  if (!allowed.has(model)) {
+    throw new Error(`${cli_kind} model_version must be one of: ${[...allowed].join(", ")}`);
+  }
+  return model;
+}
+
+function normalizeDreaminaImageResolutionType(cli_kind, model_version, value) {
+  const allowed = DREAMINA_IMAGE_MODEL_SPECS[model_version]?.resolutions ?? DREAMINA_IMAGE_RESOLUTION_TYPES;
+  if (value === undefined || value === null || value === "") {
+    return allowed.includes("2k") ? "2k" : allowed[allowed.length - 1];
+  }
+  const resolution = String(value).trim();
+  if (!DREAMINA_IMAGE_RESOLUTION_TYPES.includes(resolution)) {
+    throw new Error(`resolution_type must be one of: ${DREAMINA_IMAGE_RESOLUTION_TYPES.join(", ")}`);
+  }
+  if (!allowed.includes(resolution)) {
+    throw new Error(`resolution_type ${resolution} is not supported by model_version ${model_version}; supported: ${allowed.join(", ")}`);
+  }
+  return resolution;
+}
+
+function dreaminaImageConfig(input = {}) {
+  const generation_type = input.generation_type ?? "image";
+  if (!DREAMINA_IMAGE_GENERATION_TYPES.includes(generation_type)) {
+    throw new Error(`image generation_type must be one of: ${DREAMINA_IMAGE_GENERATION_TYPES.join(", ")}`);
+  }
+  const cli_kind = dreaminaImageCliKind(generation_type);
+  const model_version = normalizeDreaminaImageModel(cli_kind, input.model_version);
+  const resolution_type = normalizeDreaminaImageResolutionType(cli_kind, model_version, input.resolution_type ?? dreaminaImageResolutionType(input.outputSpec ?? {}, model_version));
+  const requestedRatio = String(input.ratio ?? "").trim();
+  const ratio = DREAMINA_IMAGE_RATIOS.includes(requestedRatio) ? requestedRatio : DREAMINA_IMAGE_DEFAULT_RATIO;
+  const generate_num = input.generate_num === undefined || input.generate_num === null || input.generate_num === "" ? null : clampInteger(input.generate_num, 1, DREAMINA_IMAGE_MAX_GENERATE_NUM, "generate_num");
+  const width = input.width === undefined || input.width === null || input.width === "" ? null : clampInteger(input.width, 1, 100000, "width");
+  const height = input.height === undefined || input.height === null || input.height === "" ? null : clampInteger(input.height, 1, 100000, "height");
+  if ((width === null) !== (height === null)) throw new Error("width 与 height 必须同时提供。");
+  const poll = clampInteger(input.poll ?? DREAMINA_CLI_ASYNC_POLL_SECONDS, 0, 600, "poll");
+  return { generation_type, cli_kind, model_version, resolution_type, ratio, generate_num, width, height, poll };
+}
+
+function dreaminaImageArgv({ executable, imageConfig, prompt, image = null }) {
+  // model_version 始终显式透传：便于 argv 自证本次真用的模型（默认 5.0 与 CLI 默认一致）。
+  const modelArg = ["--model_version", imageConfig.model_version];
+  const countArg = imageConfig.generate_num ? ["--generate_num", String(imageConfig.generate_num)] : [];
+  const sizeArg = imageConfig.width && imageConfig.height ? ["--width", String(imageConfig.width), "--height", String(imageConfig.height)] : [];
+  if (imageConfig.cli_kind === "image2image") {
+    return compactArgs([
+      executable,
+      "image2image",
+      "--images", materializeDreaminaUploadFile(image),
+      "--prompt", prompt,
+      "--resolution_type", imageConfig.resolution_type,
+      ...modelArg,
+      ...countArg,
+      ...sizeArg,
+      "--ratio", imageConfig.ratio,
+      "--poll", String(imageConfig.poll)
+    ]);
+  }
+  return compactArgs([
+    executable,
+    "text2image",
+    "--prompt", prompt,
+    ...sizeArg,
+    "--ratio", imageConfig.ratio,
+    "--resolution_type", imageConfig.resolution_type,
+    ...modelArg,
+    ...countArg,
+    "--poll", String(imageConfig.poll)
+  ]);
+}
+
+const DREAMINA_UPSCALE_DEFAULT_RESOLUTION = "2k";
+
+function normalizeDreaminaUpscaleResolution(value) {
+  const resolution = String(value ?? DREAMINA_UPSCALE_DEFAULT_RESOLUTION).trim();
+  if (!DREAMINA_IMAGE_UPSCALE_RESOLUTIONS.includes(resolution)) {
+    throw new Error(`resolution_type must be one of: ${DREAMINA_IMAGE_UPSCALE_RESOLUTIONS.join(", ")}`);
+  }
+  return resolution;
+}
+
+function dreaminaUpscaleArgv({ executable, resolution, image, poll }) {
+  return compactArgs([
+    executable,
+    "image_upscale",
+    "--image", materializeDreaminaUploadFile(image),
+    "--resolution_type", resolution,
+    "--poll", String(poll)
+  ]);
+}
+
+function dreaminaImageResolutionType(outputSpec, model_version = null) {
+  const allowed = DREAMINA_IMAGE_MODEL_SPECS[model_version]?.resolutions ?? DREAMINA_IMAGE_MODEL_SPECS[DREAMINA_IMAGE_DEFAULT_MODEL].resolutions;
   const maxSide = Math.max(Number(outputSpec.width ?? 0), Number(outputSpec.height ?? 0));
-  if (maxSide >= 3000) return "4k";
-  if (maxSide >= 1600) return "2k";
-  return "1k";
+  const preferred = maxSide >= 3000 ? "4k" : "2k";
+  if (allowed.includes(preferred)) return preferred;
+  return allowed.includes("2k") ? "2k" : allowed[allowed.length - 1];
 }
 
 function compactArgs(args) {
@@ -5022,7 +7086,12 @@ function uniqueStagingName(fileName) {
 }
 
 function runSqlScript(db, sql) {
-  for (const statement of sql.split(";")) {
+  // Comments are stripped BEFORE splitting, because splitting first is wrong in a way that is easy to
+  // miss: a semicolon inside a comment (an ordinary thing to write in prose) would cut a statement in
+  // half and produce a confusing syntax error somewhere else entirely. Stripping first means the schema
+  // file can explain itself without the explanations becoming part of the SQL grammar.
+  const withoutComments = sql.replace(/--[^\n]*/g, "");
+  for (const statement of withoutComments.split(";")) {
     const trimmed = statement.trim();
     if (trimmed) db.prepare(trimmed).run();
   }
@@ -5082,6 +7151,10 @@ function canvasFromRow(row) {
     project_id: row.project_id,
     title: row.title,
     status: row.status,
+    // REN-08: the document revision travels with the canvas everywhere it is read, so a client always has the value
+    // it must quote back as expected_revision. A separate "get the revision" call would be a second source of truth
+    // that could be read at a different moment than the shapes it describes.
+    revision: Number(row.revision ?? 0),
     created_by: row.created_by,
     created_at: row.created_at,
     updated_at: row.updated_at
@@ -5122,6 +7195,18 @@ function mediaKindFromVersion(version) {
 }
 
 function buildSafeDerivedCopyPlan(root, source, version, derivative_type, input = {}) {
+  // REN-05: this builder is no longer on the generation path. Derivation goes through
+  // media-transcode.js, which runs ffmpeg and FAILS rather than copying. It is retained only so the
+  // removal is visible in the diff, and it now refuses outright: a "derived" file that is a copy of
+  // its source is the defect REN-05 removes, so nothing should be able to call this by accident.
+  throw new DerivationError(
+    "DERIVATION_COPY_PATH_REMOVED",
+    "derived files are produced by ffmpeg; copying the source is no longer a generation strategy",
+    { derivative_type, source_extension: source?.extension ?? null }
+  );
+}
+
+function legacySafeDerivedCopyPlan(root, source, version, derivative_type, input = {}) {
   const sourceKind = mediaKindFromVersion(version);
   if (derivative_type === "thumbnail") {
     if (sourceKind !== "image") throw new Error(`safe thumbnail generation requires an image source, got ${sourceKind}`);
@@ -5424,4 +7509,13 @@ function objectIdFromObjectPath(root, absolutePath) {
   const basename = path.basename(resolved);
   if (!/^[a-f0-9]{64}\.blob$/.test(basename)) return null;
   return `sha256:${basename.slice(0, 64)}`;
+}
+
+function pickConfigSecretString(config, pathParts = []) {
+  let cursor = config;
+  for (const part of pathParts) {
+    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) return "";
+    cursor = cursor[part];
+  }
+  return typeof cursor === "string" ? cursor.trim() : "";
 }

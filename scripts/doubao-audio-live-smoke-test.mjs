@@ -52,8 +52,8 @@ try {
   assert.ok(stat.size > 44);
   const asset = svc.getAsset({ asset_id: registered.asset_id });
   assert.equal(asset.media_type, "audio");
-  assert.equal(asset.license_status, "cleared");
-  assert.equal(asset.risk_level, "low");
+  assert.equal(asset.license_status, "unknown");
+  assert.equal(asset.risk_level, "unknown");
   assert.ok(asset.sources.some((source) => source.source_type === "doubao_audio_platform_review"));
 
   console.log(JSON.stringify({

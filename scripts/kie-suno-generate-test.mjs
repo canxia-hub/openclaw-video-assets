@@ -18,7 +18,19 @@ Let the quiet become flame`;
 
 const style = "gentle cinematic pop, 88 BPM, piano, soft strings, airy female vocal, warm close mix";
 
-const svc = new VideoAssetService({ pluginConfig: { repositoryRoot: repo } }).init();
+const ren02GenerationGrant = {
+  // REN-02: real provider execution is fail-closed by default. These regression tests exercise the
+  // ADAPTER behaviour with the mock backend, so they opt in explicitly to the isolated-test grant
+  // (tool surface + in-memory budget ledger). The default deployment config stays "deny".
+  generation: {
+    allowSurfaces: ["tool"],
+    unattributedPolicy: "allow-with-surface-grant",
+    unattributedSurfaces: ["tool"],
+    ledger: "memory",
+    budget: { totalCredits: 100000, estimates: { "audio.doubao.generate": 20, "audio.doubao.canvas.generate": 20, "audio.kie.generate": 30, "audio.kie.canvas.generate": 30 } }
+  }
+};
+const svc = new VideoAssetService({ pluginConfig: { repositoryRoot: repo, security: ren02GenerationGrant } }).init();
 try {
   const project = svc.createProject({ title: "KIE Suno 生成测试" });
 

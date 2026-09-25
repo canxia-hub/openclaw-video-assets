@@ -1,0 +1,2185 @@
+{
+  "contract_version": "1.0.0-ren04",
+  "kind": "REN-04 shared domain contract registry (SOURCE OF TRUTH)",
+  "readme": "This file is the single source from which the tool manifest, input schemas, RPC map, docs and the legacy migration adapter are GENERATED. Nothing downstream may be hand-edited: harness/contract-generator.mjs emits artifacts/generated/* and harness/contract-consistency.mjs fails the build when any consumer disagrees with this registry.",
+  "candidate": {
+    "repo": "implementation/REN-04/worktree/video-assets",
+    "commit": "28204fe0149bb03dd25ada142a98dd0cad839eca",
+    "baseline": "REN-02 security candidate (parent-accepted isolated code)",
+    "legacy_tool_count": 69,
+    "legacy_tool_count_evidence": "evidence/tool-inventory.json reports 69 extracted registrations and an identical name set to openclaw.plugin.json contracts.tools (69)"
+  },
+  "conventions": {
+    "clustering": "operations are clustered by resource domain, then by risk, then by typical-task adjacency; the resident set is the measured typical production chain, not a raw frequency cut",
+    "no_universal_json_tool": true,
+    "no_universal_json_tool_note": "every operation has a closed, typed input; no operation accepts an arbitrary JSON payload or a free-form object bag as its work unit",
+    "no_top_level_anyof_oneof": true,
+    "no_top_level_anyof_oneof_note": "variants are expressed as closed enums that select among FLAT typed fields plus explicit mutual-exclusion groups; no top-level anyOf/oneOf appears in any generated schema (the host flattens those, which loses the constraint). Validated by contract-consistency.mjs.",
+    "no_optional_true_marker": true,
+    "no_optional_true_marker_note": "capability is never hidden behind an optional:true marker; a field is either required, or optional-and-documented, and every enum member is reachable",
+    "required_semantics": "every entry in `required` cites the service-layer assertion that enforces it (file:line), so 'required' is a verified claim rather than a copy of the old empty arrays",
+    "legacy_alias_policy": "legacy names remain callable through the migration adapter, but they are NOT re-injected as resident tools; the adapter resolves them onto the new operations. Sunset requires call telemetry proving zero use (see sunset_gate).",
+    "single_submit_rule": "plan and execute are the SAME operation selected by `mode`; there is no separate plan tool to alias onto a generate tool, so one submission cannot be counted twice by alias or retry. Validated by the alias double-submit case in the regression guardrails."
+  },
+  "budget": {
+    "resident_max": 10,
+    "resident_max_basis": "parent design budget; REN-04 is exactly at it (10 resident operations)",
+    "surface_reduction_target": 0.7,
+    "surface_metric": "REN-03 ab_metric / plugin_tool_surface_bytes (bytes of plugin tools inside the provider tools field + bytes of the plugin lines inside the system-prompt tool directory)",
+    "audio_schema_reduction_target": 0.5,
+    "measurement_rule": "bytes and counts are measured, never estimated as tokens; no token figure is claimed anywhere in this package (no tokenizer and no paid provider call)",
+    "measured_result_as_of_segA": {
+      "resident_set_prompt_bytes_reduction": 0.5513,
+      "resident_target_met": false,
+      "audio_tool_count_reduction": 0.875,
+      "audio_prompt_bytes_reduction": 0.8629,
+      "audio_target_met": true,
+      "why_the_resident_target_is_missed": "Preserving every legacy parameter costs bytes. An earlier draft met 70% only because it silently dropped 408 parameters across 38 tools (evidence/param-compatibility-segA.json); closing additionalProperties:false over that draft would have REJECTED those calls. Correctness was chosen over the byte budget, and the miss is reported rather than papered over.",
+      "what_reaches_the_target": "The route-based presentation (Tool Search directory/code mode) is the lever that meets 70%: REN-03 measured 84.09% for this same plugin on that route. That reduction is orthogonal to schema convergence and is NOT re-measured here; the combined figure is a full-regression item and is not claimed."
+    }
+  },
+  "sunset_gate": {
+    "requirement": "a legacy alias may be retired only when call telemetry shows zero use over the observation window",
+    "status": "NOT SATISFIED in this package",
+    "reason": "no call telemetry channel exists in the isolated harness, and no production traffic was observed. All 69 legacy names therefore stay resolvable through the adapter; none is deleted or disabled here.",
+    "rollback": "the original registration snapshot is preserved (see rollback.md), so any legacy name can be restored by route without touching data"
+  },
+  "domains": [
+    {
+      "key": "asset",
+      "title_zh": "素材",
+      "note": "asset records, versions, branches, rights, taxonomy, annotations, integrity"
+    },
+    {
+      "key": "project",
+      "title_zh": "项目",
+      "note": "project records, specs and asset references"
+    },
+    {
+      "key": "entity",
+      "title_zh": "制作实体",
+      "note": "characters, scenes, costumes, props and their asset links"
+    },
+    {
+      "key": "canvas",
+      "title_zh": "制作画布",
+      "note": "canvas board, shapes, slots, handoff and review cards"
+    },
+    {
+      "key": "generation",
+      "title_zh": "生成",
+      "note": "the cost-bearing provider entry points (video, image, upscale, audio)"
+    },
+    {
+      "key": "widget",
+      "title_zh": "画布组件",
+      "note": "native widget render descriptor for the canvas UI"
+    },
+    {
+      "key": "migration",
+      "title_zh": "迁移期兼容入口",
+      "note": "迁移窗口内的兼容入口。不是能力合并：它让旧工具名在新包上仍可调用，待调用方迁移完成后移除。"
+    }
+  ],
+  "operations": [
+    {
+      "op": "video.asset.read",
+      "tool": "video_asset_read",
+      "domain": "asset",
+      "risk": "read",
+      "resident": true,
+      "display_zh": "读取素材",
+      "description": "Read asset records: by-id detail, search, lineage, derived files, taxonomy classification, annotations, integrity scan and taxonomy report.",
+      "search_keywords": "asset read get search find lineage derived files classification annotations integrity taxonomy report lookup",
+      "input": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "get",
+            "search",
+            "lineage",
+            "derived_files",
+            "classification",
+            "annotations",
+            "integrity_scan",
+            "taxonomy_report"
+          ],
+          "required": true,
+          "desc": "selects which read is performed; all other fields are typed and the applicable subset is documented per mode"
+        },
+        "asset_id": {
+          "type": "string",
+          "desc": "asset identifier (get, lineage, derived_files, classification, annotations)"
+        },
+        "asset_version_id": {
+          "type": "string",
+          "desc": "narrow to one version"
+        },
+        "query": {
+          "type": "string",
+          "desc": "search text (search mode)"
+        },
+        "limit": {
+          "type": "number",
+          "desc": "page size (search, taxonomy_report)"
+        },
+        "offset": {
+          "type": "number",
+          "desc": "page offset (search)"
+        },
+        "include_archived": {
+          "type": "boolean",
+          "desc": "include archived rows (search, taxonomy_report, annotations)"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "required_evidence": {
+        "mode": "registry-level: selects the read; the per-mode key below is then enforced by the service",
+        "asset_id (get)": "service.js:408 getAsset asserts asset_id",
+        "asset_id (classification)": "service.js:3595 getAssetClassification asserts asset_id",
+        "asset_id (lineage)": "service.js:511 lineage asserts asset_id",
+        "target_type/target_id (annotations)": "service.js:3690-3691 listAnnotations asserts target_type and target_id"
+      },
+      "mutex": [],
+      "ranges": {
+        "limit": [
+          1,
+          200
+        ],
+        "offset": [
+          0,
+          100000
+        ]
+      },
+      "rpc_method": "video.asset.read",
+      "service": [
+        "getAsset",
+        "searchAssets",
+        "getAssetLineage",
+        "listDerivedFiles",
+        "getAssetClassification",
+        "listAnnotations",
+        "assetIntegrityScan",
+        "assetTaxonomyReport"
+      ],
+      "result_keys": [
+        "asset_id",
+        "asset_version_id",
+        "title",
+        "results",
+        "classifications",
+        "annotations",
+        "findings",
+        "gaps"
+      ],
+      "legacy": [
+        "video_asset_get",
+        "video_asset_search",
+        "video_asset_lineage",
+        "video_asset_derived_files",
+        "video_asset_get_classification",
+        "video_asset_annotations",
+        "video_asset_integrity_scan",
+        "video_asset_taxonomy_report"
+      ]
+    },
+    {
+      "op": "video.asset.write",
+      "tool": "video_asset_write",
+      "domain": "asset",
+      "risk": "write",
+      "resident": true,
+      "display_zh": "写入素材元数据与版本",
+      "description": "Write asset metadata and version graph: update metadata, create version, create branch, save copy, register or generate a derived file, add or update an annotation.",
+      "search_keywords": "asset write update metadata version branch save copy derived file register generate annotate annotation note",
+      "input": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "update_metadata",
+            "create_version",
+            "create_branch",
+            "save_copy",
+            "register_derived_file",
+            "generate_derived_file",
+            "annotate",
+            "update_annotation"
+          ],
+          "required": true,
+          "desc": "selects the write"
+        },
+        "asset_id": {
+          "type": "string",
+          "desc": "target asset (update_metadata, create_version, create_branch)"
+        },
+        "asset_version_id": {
+          "type": "string",
+          "desc": "target version"
+        },
+        "title": {
+          "type": "string",
+          "desc": "new title (update_metadata) or branch/version name"
+        },
+        "description": {
+          "type": "string",
+          "desc": "new description (update_metadata)"
+        },
+        "tags": {
+          "type": "array",
+          "items": "string",
+          "desc": "replacement tag list (update_metadata)"
+        },
+        "base_version_id": {
+          "type": "string",
+          "desc": "branch base (create_branch)"
+        },
+        "name": {
+          "type": "string",
+          "desc": "branch name (create_branch)"
+        },
+        "change_summary": {
+          "type": "string",
+          "desc": "version change summary (create_version, create_branch)"
+        },
+        "change_items": {
+          "type": "array",
+          "items": "object",
+          "desc": "structured change entries (create_version)"
+        },
+        "source_asset_id": {
+          "type": "string",
+          "desc": "copy source asset (save_copy)"
+        },
+        "source_version_id": {
+          "type": "string",
+          "desc": "copy source version (save_copy)"
+        },
+        "copy_type": {
+          "type": "string",
+          "enum": [
+            "snapshot_copy",
+            "working_copy",
+            "project_copy",
+            "export_copy"
+          ],
+          "desc": "copy kind (save_copy)"
+        },
+        "file_path": {
+          "type": "string",
+          "desc": "derived file source path (register_derived_file, generate_derived_file)"
+        },
+        "derivative_type": {
+          "type": "string",
+          "enum": [
+            "thumbnail",
+            "proxy",
+            "transcode",
+            "audio_proxy",
+            "subtitle",
+            "waveform",
+            "contact_sheet",
+            "metadata",
+            "other"
+          ],
+          "desc": "derived file kind"
+        },
+        "annotation_id": {
+          "type": "string",
+          "desc": "annotation to update (update_annotation)"
+        },
+        "target_type": {
+          "type": "string",
+          "enum": [
+            "asset",
+            "asset_version",
+            "entity",
+            "project_ref"
+          ],
+          "desc": "annotation target kind (annotate)"
+        },
+        "target_id": {
+          "type": "string",
+          "desc": "annotation target id (annotate)"
+        },
+        "annotation_type": {
+          "type": "string",
+          "enum": [
+            "character_profile",
+            "scene_concept",
+            "costume_spec",
+            "prop_function",
+            "visual_continuity",
+            "source_rights",
+            "production_note",
+            "review_note",
+            "prompt_note",
+            "other"
+          ],
+          "desc": "annotation kind (annotate)"
+        },
+        "body": {
+          "type": "string",
+          "desc": "annotation body (annotate, update_annotation)"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "active",
+            "superseded",
+            "resolved",
+            "archived"
+          ],
+          "desc": "annotation lifecycle status (update_annotation)"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "required_evidence": {
+        "mode": "registry-level selector",
+        "asset_id (update_metadata)": "service.js:275 asserts asset_id",
+        "change_items (create_version)": "service.js:278 asserts change_items",
+        "asset_id+base_version_id+name (create_branch)": "service.js:316-318 createBranch asserts all three",
+        "source_asset_id+source_version_id+copy_type (save_copy)": "service.js:333-335 saveCopy asserts all three",
+        "file_path (register_derived_file)": "service.js:513 lineage file_path assertion applies to the derived-file registration path",
+        "target_type+target_id+annotation_type+title+body (annotate)": "service.js:3669-3673 annotateAsset asserts all five",
+        "annotation_id (update_annotation)": "service.js:3702 updateAnnotation asserts annotation_id"
+      },
+      "mutex": [
+        [
+          "annotation_id",
+          "target_id"
+        ]
+      ],
+      "mutex_evidence": "annotate declares target_id and update_annotation declares annotation_id; no legacy annotation tool declares both, so this exclusion cannot reject a legal legacy call",
+      "ranges": {},
+      "rpc_method": "video.asset.write",
+      "service": [
+        "updateAssetMetadata",
+        "createAssetVersion",
+        "createBranch",
+        "saveCopy",
+        "registerDerivedFile",
+        "generateDerivedFile",
+        "annotateAsset",
+        "updateAnnotation"
+      ],
+      "result_keys": [
+        "asset_id",
+        "asset_version_id",
+        "annotation_id",
+        "branch_id",
+        "derived_file_id",
+        "change_summary"
+      ],
+      "legacy": [
+        "video_asset_update_metadata",
+        "video_asset_create_version",
+        "video_asset_create_branch",
+        "video_asset_save_copy",
+        "video_asset_register_derived_file",
+        "video_asset_generate_derived_file",
+        "video_asset_annotate",
+        "video_asset_update_annotation"
+      ]
+    },
+    {
+      "op": "video.asset.ingest",
+      "tool": "video_asset_ingest",
+      "domain": "asset",
+      "risk": "write",
+      "resident": true,
+      "display_zh": "素材入库",
+      "description": "Import a local media file into the asset library as a raw or working asset.",
+      "search_keywords": "asset ingest import add media file upload raw working",
+      "input": {
+        "file_path": {
+          "type": "string",
+          "required": true,
+          "desc": "absolute path of the file to import"
+        },
+        "title": {
+          "type": "string",
+          "desc": "asset title"
+        },
+        "description": {
+          "type": "string",
+          "desc": "asset description"
+        },
+        "tags": {
+          "type": "array",
+          "items": "string",
+          "desc": "asset tags"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "raw",
+            "working"
+          ],
+          "desc": "asset kind"
+        },
+        "source": {
+          "type": "object",
+          "desc": "provenance record: source_type, url, retrieval_method, license_hint, notes"
+        }
+      },
+      "required": [
+        "file_path"
+      ],
+      "required_evidence": {
+        "file_path": "service.js:236 ingestAsset -> service.js:238 asserts file_path"
+      },
+      "mutex": [],
+      "ranges": {},
+      "rpc_method": "video.asset.ingest",
+      "service": [
+        "ingestAsset"
+      ],
+      "result_keys": [
+        "asset_id",
+        "asset_version_id",
+        "kind",
+        "title"
+      ],
+      "legacy": [
+        "video_asset_ingest"
+      ]
+    },
+    {
+      "op": "video.asset.classify",
+      "tool": "video_asset_classify",
+      "domain": "asset",
+      "risk": "write",
+      "resident": true,
+      "display_zh": "标注素材分类",
+      "description": "Classify an asset or asset version in the controlled production taxonomy.",
+      "search_keywords": "asset classify taxonomy domain type subtype confidence",
+      "input": {
+        "asset_id": {
+          "type": "string",
+          "required": true,
+          "desc": "asset to classify"
+        },
+        "asset_version_id": {
+          "type": "string",
+          "desc": "narrow to one version"
+        },
+        "domain": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "character",
+            "scene",
+            "costume",
+            "prop",
+            "audio",
+            "reference",
+            "prompt",
+            "document",
+            "delivery",
+            "other"
+          ],
+          "desc": "controlled taxonomy domain"
+        },
+        "type": {
+          "type": "string",
+          "required": true,
+          "desc": "taxonomy type within the domain"
+        },
+        "subtype": {
+          "type": "string",
+          "desc": "optional free subtype"
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "candidate",
+            "inferred"
+          ],
+          "desc": "classification confidence"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "agent",
+            "import",
+            "migration"
+          ],
+          "desc": "how the classification was obtained"
+        }
+      },
+      "required": [
+        "asset_id",
+        "domain",
+        "type"
+      ],
+      "required_evidence": {
+        "asset_id": "service.js:3576 classifyAsset asserts asset_id",
+        "domain": "service.js:3577 classifyAsset asserts domain",
+        "type": "service.js:3578 classifyAsset asserts type — this is the assertion a REN-03 fixture initially omitted, which is why it is pinned here"
+      },
+      "mutex": [],
+      "ranges": {},
+      "rpc_method": "video.asset.classify",
+      "service": [
+        "classifyAsset"
+      ],
+      "result_keys": [
+        "asset_id",
+        "asset_version_id",
+        "classifications"
+      ],
+      "legacy": [
+        "video_asset_classify"
+      ]
+    },
+    {
+      "op": "video.asset.rights",
+      "tool": "video_asset_update_rights",
+      "domain": "asset",
+      "risk": "write",
+      "resident": true,
+      "display_zh": "更新授权与风险",
+      "description": "Update an asset's license status and risk level, and append source evidence.",
+      "search_keywords": "asset rights license status risk level source evidence cleared restricted",
+      "input": {
+        "asset_id": {
+          "type": "string",
+          "required": true,
+          "desc": "target asset"
+        },
+        "license_status": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "cleared",
+            "restricted",
+            "rejected"
+          ],
+          "desc": "license status"
+        },
+        "risk_level": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "low",
+            "medium",
+            "high"
+          ],
+          "desc": "risk level"
+        },
+        "notes": {
+          "type": "string",
+          "desc": "rights notes"
+        },
+        "source": {
+          "type": "object",
+          "desc": "provenance evidence: source_type, url, license_hint, retrieval_method, notes"
+        }
+      },
+      "required": [
+        "asset_id"
+      ],
+      "required_evidence": {
+        "asset_id": "service.js:453 asserts asset_id",
+        "at least one of license_status/risk_level/source": "service.js:461 asserts one of license_status, risk_level or source"
+      },
+      "mutex": [],
+      "ranges": {},
+      "at_least_one": [
+        [
+          "license_status",
+          "risk_level",
+          "source"
+        ]
+      ],
+      "rpc_method": "video.asset.rights",
+      "service": [
+        "updateAssetRights"
+      ],
+      "result_keys": [
+        "asset_id",
+        "license_status",
+        "risk_level"
+      ],
+      "legacy": [
+        "video_asset_update_rights"
+      ]
+    },
+    {
+      "op": "video.project.write",
+      "tool": "video_project_write",
+      "domain": "project",
+      "risk": "write",
+      "resident": true,
+      "display_zh": "项目与素材引用写入",
+      "description": "Create a project, update its output spec, and add, update or remove an asset reference on it.",
+      "search_keywords": "project create update spec add asset reference link remove",
+      "input": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "create",
+            "update_spec",
+            "add_ref",
+            "update_ref",
+            "remove_ref"
+          ],
+          "required": true,
+          "desc": "selects the project write"
+        },
+        "project_id": {
+          "type": "string",
+          "desc": "target project (update_spec, add_ref, update_ref, remove_ref)"
+        },
+        "reference_id": {
+          "type": "string",
+          "desc": "target reference (update_ref, remove_ref)"
+        },
+        "title": {
+          "type": "string",
+          "desc": "project title (create)"
+        },
+        "description": {
+          "type": "string",
+          "desc": "project description"
+        },
+        "aspect_ratio": {
+          "type": "string",
+          "desc": "output aspect ratio (update_spec)"
+        },
+        "resolution": {
+          "type": "string",
+          "desc": "output resolution (update_spec)"
+        },
+        "fps": {
+          "type": "number",
+          "desc": "output frame rate (update_spec)"
+        },
+        "target_platforms": {
+          "type": "array",
+          "items": "string",
+          "desc": "target platforms (update_spec)"
+        },
+        "asset_id": {
+          "type": "string",
+          "desc": "referenced asset (add_ref, update_ref)"
+        },
+        "asset_version_id": {
+          "type": "string",
+          "desc": "referenced version"
+        },
+        "role": {
+          "type": "string",
+          "desc": "reference role"
+        },
+        "usage_scope": {
+          "type": "string",
+          "desc": "reference usage scope"
+        },
+        "pin_mode": {
+          "type": "string",
+          "enum": [
+            "pinned",
+            "follow_latest",
+            "candidate"
+          ],
+          "desc": "reference pin mode"
+        },
+        "required": {
+          "type": "boolean",
+          "desc": "whether the reference is required"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "required_evidence": {
+        "mode": "registry-level selector",
+        "title (create)": "service.js:718 createProject asserts title",
+        "project_id (update_spec)": "service.js:731 asserts project_id",
+        "reference_id (update_ref)": "service.js:777 updateProjectRef asserts reference_id",
+        "reference_id (remove_ref)": "service.js:797 removeProjectRef asserts reference_id"
+      },
+      "mutex": [],
+      "mutex_note": "Deliberately EMPTY. A [reference_id, asset_id] mutual exclusion was drafted and then removed: the real declaration of video_project_update_asset_ref carries BOTH reference_id and asset_id (evidence/tool-surface-L1-baseline.json), so excluding them would falsely reject a legal update_ref call. Source-level evidence for a constraint like this is required before it is emitted, because an unenforced or over-broad annotation is worse than none.",
+      "ranges": {
+        "fps": [
+          1,
+          240
+        ]
+      },
+      "rpc_method": "video.project.write",
+      "service": [
+        "createProject",
+        "updateProjectSpec",
+        "addProjectRef",
+        "updateProjectRef",
+        "removeProjectRef"
+      ],
+      "result_keys": [
+        "project_id",
+        "reference_id",
+        "title"
+      ],
+      "legacy": [
+        "video_project_create",
+        "video_project_update_spec",
+        "video_project_add_asset_ref",
+        "video_project_update_asset_ref",
+        "video_project_remove_asset_ref"
+      ]
+    },
+    {
+      "op": "video.project.read",
+      "tool": "video_project_read",
+      "domain": "project",
+      "risk": "read",
+      "resident": true,
+      "display_zh": "读取项目引用与报告",
+      "description": "List a project's asset references, or build its asset-dependency or continuity report.",
+      "search_keywords": "project read refs references list asset report continuity dependency",
+      "input": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "refs",
+            "asset_report",
+            "continuity_report"
+          ],
+          "required": true,
+          "desc": "selects the project read"
+        },
+        "project_id": {
+          "type": "string",
+          "required": true,
+          "desc": "target project"
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "research",
+            "production",
+            "review",
+            "delivery"
+          ],
+          "desc": "continuity stage (continuity_report)"
+        }
+      },
+      "required": [
+        "mode",
+        "project_id"
+      ],
+      "required_evidence": {
+        "project_id": "service.js:875 getProjectDetail asserts project_id",
+        "mode": "registry-level selector"
+      },
+      "mutex": [],
+      "ranges": {},
+      "rpc_method": "video.project.read",
+      "service": [
+        "listProjectRefs",
+        "projectAssetReport",
+        "projectContinuityReport"
+      ],
+      "result_keys": [
+        "reference_id",
+        "project_id",
+        "asset_id",
+        "findings",
+        "gaps"
+      ],
+      "legacy": [
+        "video_project_refs",
+        "video_project_asset_report",
+        "video_project_continuity_report"
+      ]
+    },
+    {
+      "op": "video.canvas.slot",
+      "tool": "video_canvas_slot",
+      "domain": "canvas",
+      "risk": "write",
+      "resident": true,
+      "display_zh": "生成槽位",
+      "description": "Create, update or fill a canvas generation slot with its target size, ratio, duration and required references.",
+      "search_keywords": "canvas generation slot create update fill target size ratio duration references",
+      "input": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "create",
+            "update",
+            "fill"
+          ],
+          "required": true,
+          "desc": "selects the slot write"
+        },
+        "canvas_id": {
+          "type": "string",
+          "desc": "target canvas (create)"
+        },
+        "shape_id": {
+          "type": "string",
+          "desc": "target slot shape (update, fill)"
+        },
+        "slot": {
+          "type": "string",
+          "enum": [
+            "main_reference",
+            "character_reference",
+            "scene_reference",
+            "motion_reference",
+            "style_reference",
+            "video_clip",
+            "audio",
+            "subtitle",
+            "project_config",
+            "draft_output"
+          ],
+          "desc": "slot role"
+        },
+        "generation_type": {
+          "type": "string",
+          "enum": [
+            "image",
+            "image_to_video",
+            "text_to_video",
+            "multimodal_to_video",
+            "edit",
+            "voice",
+            "subtitle",
+            "cover",
+            "export"
+          ],
+          "desc": "generation kind the slot targets"
+        },
+        "target_aspect_ratio": {
+          "type": "string",
+          "desc": "target aspect ratio"
+        },
+        "target_width": {
+          "type": "number",
+          "desc": "target pixel width"
+        },
+        "target_height": {
+          "type": "number",
+          "desc": "target pixel height"
+        },
+        "duration_seconds": {
+          "type": "number",
+          "desc": "target duration"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "empty",
+            "ready",
+            "generating",
+            "filled",
+            "blocked"
+          ],
+          "desc": "slot workflow status"
+        },
+        "required_refs": {
+          "type": "array",
+          "items": "string",
+          "desc": "slot keys that must already exist before generation"
+        },
+        "file_path": {
+          "type": "string",
+          "desc": "generated file to place in the slot (fill)"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "required_evidence": {
+        "mode": "registry-level selector",
+        "canvas_id (create)": "service.js:1105 asserts canvas_id on the slot creation path",
+        "shape_id (update/fill)": "service.js:1154 asserts shape_id",
+        "file_path (fill)": "service.js:3477-3478 assert file_name and content_base64 on the file-writing path used by fill"
+      },
+      "mutex": [
+        [
+          "canvas_id",
+          "shape_id"
+        ]
+      ],
+      "mutex_evidence": "no legacy slot tool declares both canvas_id and shape_id (create takes canvas_id, update takes shape_id, fill takes canvas_id + slot_shape_id), so this exclusion cannot reject a legal legacy call",
+      "ranges": {
+        "duration_seconds": [
+          0,
+          600
+        ],
+        "target_width": [
+          16,
+          8192
+        ],
+        "target_height": [
+          16,
+          8192
+        ]
+      },
+      "rpc_method": "video.canvas.slot",
+      "service": [
+        "createGenerationSlot",
+        "updateGenerationSlot",
+        "fillGenerationSlot"
+      ],
+      "result_keys": [
+        "shape_id",
+        "canvas_id",
+        "status",
+        "asset_id"
+      ],
+      "legacy": [
+        "video_canvas_create_generation_slot",
+        "video_canvas_update_generation_slot",
+        "video_canvas_fill_generation_slot"
+      ]
+    },
+    {
+      "op": "video.canvas.handoff",
+      "tool": "video_canvas_handoff",
+      "domain": "canvas",
+      "risk": "read",
+      "resident": true,
+      "display_zh": "生成准备与交接",
+      "description": "Build the canvas generation package or handoff and report its readiness and blockers, or lint the canvas for binding gaps.",
+      "search_keywords": "canvas generation package handoff readiness blocker lint binding gap prepare",
+      "input": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "package",
+            "handoff",
+            "lint"
+          ],
+          "required": true,
+          "desc": "selects the preparation read"
+        },
+        "canvas_id": {
+          "type": "string",
+          "required": true,
+          "desc": "target canvas"
+        },
+        "generation_type": {
+          "type": "string",
+          "enum": [
+            "image",
+            "image_to_video",
+            "text_to_video",
+            "multimodal_to_video",
+            "edit",
+            "voice",
+            "subtitle",
+            "cover",
+            "export"
+          ],
+          "desc": "generation kind to prepare for"
+        }
+      },
+      "required": [
+        "mode",
+        "canvas_id"
+      ],
+      "required_evidence": {
+        "canvas_id": "service.js:1334 and service.js:1382 assert canvas_id on the handoff/preparation paths",
+        "mode": "registry-level selector"
+      },
+      "mutex": [],
+      "ranges": {},
+      "rpc_method": "video.canvas.handoff",
+      "service": [
+        "canvasGenerationPackage",
+        "canvasGenerationHandoff",
+        "canvasLint"
+      ],
+      "result_keys": [
+        "status",
+        "blockers",
+        "package",
+        "findings"
+      ],
+      "legacy": [
+        "video_canvas_generation_package",
+        "video_canvas_generation_handoff",
+        "video_canvas_lint"
+      ]
+    },
+    {
+      "op": "video.generate",
+      "tool": "video_generate",
+      "domain": "generation",
+      "risk": "cost",
+      "resident": true,
+      "display_zh": "生成媒体（计费）",
+      "description": "Run a media generation provider. Without mode=execute this only builds the plan; executing additionally requires accept_credit_spend=true. Providers: dreamina CLI (video, image, upscale), Doubao audio, KIE Suno. Direct or canvas target.",
+      "search_keywords": "generate generation create render produce video image upscale audio music voice doubao kie suno dreamina seedance cost credit provider plan execute",
+      "input": {
+        "provider": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "dreamina_cli",
+            "doubao_audio",
+            "kie_suno"
+          ],
+          "desc": "generation provider"
+        },
+        "media_kind": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "video",
+            "image",
+            "upscale",
+            "audio",
+            "music"
+          ],
+          "desc": "what is generated (valid combinations per provider). Named media_kind rather than kind because the legacy audio/music tools already declare `kind` meaning the ingested asset kind (raw/working); reusing the name would have collapsed two different meanings into one field"
+        },
+        "mode": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "plan",
+            "execute"
+          ],
+          "desc": "plan builds the request only; execute runs it and requires accept_credit_spend=true"
+        },
+        "target": {
+          "type": "string",
+          "enum": [
+            "direct",
+            "canvas"
+          ],
+          "desc": "direct request, or canvas-slot driven (replaces the separate video_canvas_* wrappers)"
+        },
+        "canvas_id": {
+          "type": "string",
+          "desc": "canvas (target=canvas)"
+        },
+        "slot_shape_id": {
+          "type": "string",
+          "desc": "audio or video slot being filled (target=canvas)"
+        },
+        "accept_credit_spend": {
+          "type": "boolean",
+          "desc": "consent to spend credits; required for mode=execute"
+        },
+        "run_preflight": {
+          "type": "boolean",
+          "desc": "run a credit preflight before generating (defaults to true)"
+        },
+        "prompt": {
+          "type": "string",
+          "desc": "generation prompt"
+        },
+        "prompt_text": {
+          "type": "string",
+          "desc": "audio script or prompt text"
+        },
+        "lyrics": {
+          "type": "string",
+          "desc": "song lyrics (kie_suno music)"
+        },
+        "style": {
+          "type": "string",
+          "desc": "musical style (kie_suno music)"
+        },
+        "instrumental": {
+          "type": "boolean",
+          "desc": "instrumental only (kie_suno music)"
+        },
+        "voices": {
+          "type": "array",
+          "items": "object",
+          "desc": "voice assignments (doubao audio)"
+        },
+        "timeline": {
+          "type": "array",
+          "items": "object",
+          "desc": "speech timeline (doubao audio)"
+        },
+        "duration_seconds": {
+          "type": "number",
+          "desc": "target duration"
+        },
+        "video_resolution": {
+          "type": "string",
+          "desc": "target video resolution"
+        },
+        "ratio": {
+          "type": "string",
+          "desc": "target ratio"
+        },
+        "model_version": {
+          "type": "string",
+          "desc": "provider model version"
+        },
+        "image_path": {
+          "type": "string",
+          "desc": "source image (image_to_video, upscale)"
+        },
+        "output_title": {
+          "type": "string",
+          "desc": "title for ingested outputs"
+        },
+        "download_outputs": {
+          "type": "boolean",
+          "desc": "download provider outputs"
+        },
+        "ingest_outputs": {
+          "type": "boolean",
+          "desc": "ingest outputs as assets"
+        },
+        "writeback_canvas": {
+          "type": "boolean",
+          "desc": "write results back to the canvas"
+        }
+      },
+      "required": [
+        "provider",
+        "media_kind",
+        "mode"
+      ],
+      "required_evidence": {
+        "provider": "registry-level selector: the provider enum selects which provider path runs; each path is backed by the service methods listed in `service` and asserted individually below",
+        "media_kind": "registry-level selector: together with provider it selects the provider path; the valid (provider,media_kind) pairs are enumerated in `combinations` so an unsupported pair is rejected explicitly instead of silently dispatching. Renamed from kind to avoid colliding with the legacy kind field (ingested asset kind: raw/working)",
+        "mode": "registry-level selector: plan builds the request only, execute is the cost-bearing path. The plan/generate verb split that would let a plan tool alias onto a generate tool is deliberately removed",
+        "accept_credit_spend (mode=execute)": "service.js:1805 (video), service.js:1979 (image), service.js:2142 (upscale) each throw unless accept_credit_spend === true",
+        "canvas_id (target=canvas)": "service.js:1700 canvasDreaminaCliGenerateVideo resolves the handoff from canvas_id and reports 'canvas generation handoff is not ready' when it cannot"
+      },
+      "combinations": {
+        "note": "The explicitly supported (provider, kind, mode, target) tuples, and the ones that are NOT supported. Every supported tuple resolves to exactly one legacy tool. Unsupported tuples are declared here and REJECTED by the adapter rather than silently dispatching somewhere unexpected - so no capability is invented and none is silently substituted.",
+        "supported": [
+          {
+            "provider": "doubao_audio",
+            "kind": "audio",
+            "mode": "plan",
+            "target": "direct",
+            "legacy": "video_audio_doubao_plan"
+          },
+          {
+            "provider": "doubao_audio",
+            "kind": "audio",
+            "mode": "plan",
+            "target": "canvas",
+            "legacy": "video_canvas_doubao_audio_plan"
+          },
+          {
+            "provider": "doubao_audio",
+            "kind": "audio",
+            "mode": "execute",
+            "target": "direct",
+            "legacy": "video_audio_doubao_generate"
+          },
+          {
+            "provider": "doubao_audio",
+            "kind": "audio",
+            "mode": "execute",
+            "target": "canvas",
+            "legacy": "video_canvas_doubao_audio_generate"
+          },
+          {
+            "provider": "kie_suno",
+            "kind": "music",
+            "mode": "plan",
+            "target": "direct",
+            "legacy": "video_audio_kie_suno_plan"
+          },
+          {
+            "provider": "kie_suno",
+            "kind": "music",
+            "mode": "plan",
+            "target": "canvas",
+            "legacy": "video_canvas_kie_suno_audio_plan"
+          },
+          {
+            "provider": "kie_suno",
+            "kind": "music",
+            "mode": "execute",
+            "target": "direct",
+            "legacy": "video_audio_kie_suno_generate"
+          },
+          {
+            "provider": "kie_suno",
+            "kind": "music",
+            "mode": "execute",
+            "target": "canvas",
+            "legacy": "video_canvas_kie_suno_audio_generate"
+          },
+          {
+            "provider": "dreamina_cli",
+            "kind": "video",
+            "mode": "plan",
+            "target": "canvas",
+            "legacy": "video_canvas_dreamina_cli_plan"
+          },
+          {
+            "provider": "dreamina_cli",
+            "kind": "video",
+            "mode": "execute",
+            "target": "canvas",
+            "legacy": "video_canvas_dreamina_cli_generate_video"
+          },
+          {
+            "provider": "dreamina_cli",
+            "kind": "image",
+            "mode": "execute",
+            "target": "canvas",
+            "legacy": "video_canvas_dreamina_cli_generate_image"
+          },
+          {
+            "provider": "dreamina_cli",
+            "kind": "upscale",
+            "mode": "execute",
+            "target": "canvas",
+            "legacy": "video_canvas_dreamina_cli_upscale_image"
+          }
+        ],
+        "unsupported": [
+          {
+            "provider": "dreamina_cli",
+            "kind": "video",
+            "mode": "plan",
+            "target": "direct",
+            "reason": "the baseline has no direct dreamina CLI tool: all four dreamina tools are canvas-driven"
+          },
+          {
+            "provider": "dreamina_cli",
+            "kind": "image",
+            "mode": "plan",
+            "target": "canvas",
+            "reason": "the baseline has no image plan tool (planning exists for video only), so a plan-only image request is a NEW capability and is therefore not claimed"
+          },
+          {
+            "provider": "dreamina_cli",
+            "kind": "upscale",
+            "mode": "plan",
+            "target": "canvas",
+            "reason": "the baseline has no upscale plan tool; not claimed"
+          },
+          {
+            "provider": "dreamina_cli",
+            "kind": "image",
+            "mode": "execute",
+            "target": "direct",
+            "reason": "canvas-only in the baseline"
+          },
+          {
+            "provider": "dreamina_cli",
+            "kind": "upscale",
+            "mode": "execute",
+            "target": "direct",
+            "reason": "canvas-only in the baseline"
+          },
+          {
+            "provider": "dreamina_cli",
+            "kind": "video",
+            "mode": "execute",
+            "target": "direct",
+            "reason": "canvas-only in the baseline"
+          }
+        ]
+      },
+      "mutex": [
+        [
+          "prompt",
+          "prompt_text"
+        ],
+        [
+          "canvas_id",
+          "image_path"
+        ]
+      ],
+      "ranges": {
+        "duration_seconds": [
+          0,
+          600
+        ]
+      },
+      "rpc_method": "video.generate",
+      "service": [
+        "doubaoAudioPlan",
+        "doubaoAudioGenerate",
+        "canvasDoubaoAudioPlan",
+        "canvasDoubaoAudioGenerate",
+        "kieSunoPlan",
+        "kieSunoGenerate",
+        "canvasKieSunoPlan",
+        "canvasKieSunoGenerate",
+        "canvasDreaminaCliPlan",
+        "canvasDreaminaCliGenerateVideo",
+        "canvasDreaminaCliGenerateImage",
+        "canvasDreaminaCliUpscaleImage"
+      ],
+      "result_keys": [
+        "status",
+        "submit_id",
+        "plan",
+        "asset_id",
+        "canvas_id",
+        "credits"
+      ],
+      "legacy": [
+        "video_audio_doubao_plan",
+        "video_audio_doubao_generate",
+        "video_canvas_doubao_audio_plan",
+        "video_canvas_doubao_audio_generate",
+        "video_audio_kie_suno_plan",
+        "video_audio_kie_suno_generate",
+        "video_canvas_kie_suno_audio_plan",
+        "video_canvas_kie_suno_audio_generate",
+        "video_canvas_dreamina_cli_plan",
+        "video_canvas_dreamina_cli_generate_video",
+        "video_canvas_dreamina_cli_generate_image",
+        "video_canvas_dreamina_cli_upscale_image"
+      ]
+    },
+    {
+      "op": "video.entity.manage",
+      "tool": "video_entity_manage",
+      "domain": "entity",
+      "risk": "write",
+      "resident": false,
+      "display_zh": "制作实体写入",
+      "description": "Create a production entity (character, scene, costume, prop, organization, style) or link an asset to one.",
+      "search_keywords": "entity create character scene costume prop link asset production",
+      "input": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "create",
+            "link_asset"
+          ],
+          "required": true,
+          "desc": "selects the entity write"
+        },
+        "entity_key": {
+          "type": "string",
+          "desc": "entity key (create)"
+        },
+        "entity_type": {
+          "type": "string",
+          "enum": [
+            "character",
+            "scene",
+            "costume",
+            "prop",
+            "organization",
+            "style",
+            "other"
+          ],
+          "desc": "entity kind (create)"
+        },
+        "canonical_name": {
+          "type": "string",
+          "desc": "canonical name (create)"
+        },
+        "aliases": {
+          "type": "array",
+          "items": "string",
+          "desc": "alias list (create)"
+        },
+        "description": {
+          "type": "string",
+          "desc": "entity description"
+        },
+        "project_id": {
+          "type": "string",
+          "desc": "owning project"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "active",
+            "locked",
+            "archived"
+          ],
+          "desc": "entity status"
+        },
+        "asset_id": {
+          "type": "string",
+          "desc": "asset to link (link_asset)"
+        },
+        "asset_version_id": {
+          "type": "string",
+          "desc": "version to link"
+        },
+        "relation_type": {
+          "type": "string",
+          "enum": [
+            "depicts",
+            "costume_for",
+            "prop_for",
+            "scene_for",
+            "style_for",
+            "voice_for",
+            "reference_for"
+          ],
+          "desc": "link relation (link_asset)"
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "candidate",
+            "inferred"
+          ],
+          "desc": "link confidence"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "required_evidence": {
+        "mode": "registry-level selector: selects the entity write; the per-mode keys below are then enforced by the service",
+        "entity_key+entity_type+canonical_name (create)": "service.js:3609-3611 createEntity asserts all three",
+        "asset_id+relation_type (link_asset)": "service.js:3649-3650 linkEntityAsset asserts asset_id and relation_type"
+      },
+      "mutex": [],
+      "ranges": {},
+      "rpc_method": "video.entity.manage",
+      "service": [
+        "createEntity",
+        "linkEntityAsset"
+      ],
+      "result_keys": [
+        "entity_id",
+        "entity_key",
+        "canonical_name"
+      ],
+      "legacy": [
+        "video_entity_create",
+        "video_entity_link_asset"
+      ]
+    },
+    {
+      "op": "video.entity.search",
+      "tool": "video_entity_search",
+      "domain": "entity",
+      "risk": "read",
+      "resident": false,
+      "display_zh": "搜索制作实体",
+      "description": "Search production entities by key, name, alias, type or project.",
+      "search_keywords": "entity search find character scene costume prop by name type project",
+      "input": {
+        "query": {
+          "type": "string",
+          "desc": "free-text query; an empty query is legal and returns the first page"
+        },
+        "entity_type": {
+          "type": "string",
+          "enum": [
+            "character",
+            "scene",
+            "costume",
+            "prop",
+            "organization",
+            "style",
+            "other"
+          ],
+          "desc": "filter by kind"
+        },
+        "project_id": {
+          "type": "string",
+          "desc": "filter by project"
+        },
+        "limit": {
+          "type": "number",
+          "desc": "page size"
+        },
+        "offset": {
+          "type": "number",
+          "desc": "page offset"
+        }
+      },
+      "required": [],
+      "required_evidence": {
+        "none": "this is a legal empty-parameter query: every field may be omitted and the call still returns a page. The regression guardrails assert this stays legal."
+      },
+      "mutex": [],
+      "ranges": {
+        "limit": [
+          1,
+          100
+        ],
+        "offset": [
+          0,
+          100000
+        ]
+      },
+      "rpc_method": "video.entity.search",
+      "service": [
+        "searchEntities"
+      ],
+      "result_keys": [
+        "entity_id",
+        "entity_key",
+        "canonical_name",
+        "results"
+      ],
+      "legacy": [
+        "video_entity_search"
+      ]
+    },
+    {
+      "op": "video.canvas.read",
+      "tool": "video_canvas_read",
+      "domain": "canvas",
+      "risk": "read",
+      "resident": false,
+      "display_zh": "读取画布",
+      "description": "Read canvas state: document, search, agent context, widget context, current selection and saved view state.",
+      "search_keywords": "canvas read get search document shapes selection view state context agent widget",
+      "input": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "get",
+            "search",
+            "agent_context",
+            "widget_context",
+            "get_selection",
+            "get_view_state"
+          ],
+          "required": true,
+          "desc": "selects the canvas read"
+        },
+        "canvas_id": {
+          "type": "string",
+          "desc": "target canvas (get, agent_context, widget_context, get_selection, get_view_state)"
+        },
+        "query": {
+          "type": "string",
+          "desc": "search text (search); an empty query is legal"
+        },
+        "limit": {
+          "type": "number",
+          "desc": "page size (search)"
+        },
+        "offset": {
+          "type": "number",
+          "desc": "page offset (search)"
+        },
+        "viewport": {
+          "type": "object",
+          "desc": "current viewport hint (agent_context, widget_context)"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "required_evidence": {
+        "mode": "registry-level selector",
+        "canvas_id (get)": "service.js:1382 asserts canvas_id",
+        "viewport (get_view_state)": "service.js:1385 asserts viewport on the view-state path"
+      },
+      "mutex": [],
+      "ranges": {
+        "limit": [
+          1,
+          200
+        ],
+        "offset": [
+          0,
+          100000
+        ]
+      },
+      "rpc_method": "video.canvas.read",
+      "service": [
+        "getCanvas",
+        "searchCanvases",
+        "canvasAgentContext",
+        "canvasWidgetContext",
+        "getCanvasSelection",
+        "getCanvasViewState"
+      ],
+      "result_keys": [
+        "canvas_id",
+        "shapes",
+        "edges",
+        "results",
+        "selection",
+        "viewport"
+      ],
+      "legacy": [
+        "video_canvas_get",
+        "video_canvas_search",
+        "video_canvas_agent_context",
+        "video_canvas_widget_context",
+        "video_canvas_get_selection",
+        "video_canvas_get_view_state"
+      ]
+    },
+    {
+      "op": "video.canvas.board.write",
+      "tool": "video_canvas_board_write",
+      "domain": "canvas",
+      "risk": "write",
+      "resident": false,
+      "display_zh": "画布结构与视图写入",
+      "description": "Write canvas structure and view state: create a canvas, upsert or delete a card, link or unlink cards, save snapshot, save selection or view state, apply a production template, insert a generated asset.",
+      "search_keywords": "canvas create upsert shape card delete link unlink snapshot save selection view state template insert asset board",
+      "input": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "create",
+            "upsert_shape",
+            "delete_shape",
+            "link_shapes",
+            "unlink_shapes",
+            "save_snapshot",
+            "save_selection",
+            "save_view_state",
+            "apply_production_template",
+            "insert_generated_asset"
+          ],
+          "required": true,
+          "desc": "selects the canvas write"
+        },
+        "canvas_id": {
+          "type": "string",
+          "desc": "target canvas"
+        },
+        "shape_id": {
+          "type": "string",
+          "desc": "target card (upsert_shape, delete_shape)"
+        },
+        "edge_id": {
+          "type": "string",
+          "desc": "target edge (unlink_shapes)"
+        },
+        "source_shape_id": {
+          "type": "string",
+          "desc": "edge source (link_shapes)"
+        },
+        "target_shape_id": {
+          "type": "string",
+          "desc": "edge target (link_shapes)"
+        },
+        "edge_id_new": {
+          "type": "string",
+          "desc": "edge id to create (link_shapes)"
+        },
+        "relation_type": {
+          "type": "string",
+          "enum": [
+            "uses",
+            "depends_on",
+            "references",
+            "derived_from",
+            "revises",
+            "replaces",
+            "continues",
+            "belongs_to",
+            "appears_in",
+            "blocks",
+            "contains",
+            "related_to"
+          ],
+          "desc": "edge relation (link_shapes)"
+        },
+        "title": {
+          "type": "string",
+          "desc": "card or canvas title"
+        },
+        "shape_type": {
+          "type": "string",
+          "desc": "card kind (upsert_shape)"
+        },
+        "subject_type": {
+          "type": "string",
+          "desc": "card subject kind (upsert_shape)"
+        },
+        "subject_id": {
+          "type": "string",
+          "desc": "card subject id (upsert_shape)"
+        },
+        "props": {
+          "type": "object",
+          "desc": "card properties (upsert_shape)"
+        },
+        "x": {
+          "type": "number",
+          "desc": "card x position"
+        },
+        "y": {
+          "type": "number",
+          "desc": "card y position"
+        },
+        "width": {
+          "type": "number",
+          "desc": "card width"
+        },
+        "height": {
+          "type": "number",
+          "desc": "card height"
+        },
+        "z_index": {
+          "type": "number",
+          "desc": "card stacking order"
+        },
+        "rotation": {
+          "type": "number",
+          "desc": "card rotation"
+        },
+        "selected_shape_ids": {
+          "type": "array",
+          "items": "string",
+          "desc": "selection (save_selection)"
+        },
+        "primary_shape_id": {
+          "type": "string",
+          "desc": "primary selection (save_selection)"
+        },
+        "viewport": {
+          "type": "object",
+          "desc": "viewport to store (save_view_state)"
+        },
+        "document": {
+          "type": "object",
+          "desc": "canvas document (save_snapshot, create)"
+        },
+        "asset_id": {
+          "type": "string",
+          "desc": "asset to place (insert_generated_asset)"
+        },
+        "file_path": {
+          "type": "string",
+          "desc": "generated file to place (insert_generated_asset)"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "required_evidence": {
+        "mode": "registry-level selector: selects the canvas write; the per-mode keys below are then enforced by the service",
+        "shape_id (upsert_shape)": "service.js:1460 asserts shape_id",
+        "edge_id (unlink_shapes)": "service.js:1496 asserts edge_id",
+        "canvas_id (operations on an existing canvas)": "service.js:1334 and service.js:1428 assert canvas_id"
+      },
+      "mutex": [
+        [
+          "edge_id",
+          "source_shape_id"
+        ]
+      ],
+      "ranges": {
+        "width": [
+          1,
+          8192
+        ],
+        "height": [
+          1,
+          8192
+        ],
+        "z_index": [
+          0,
+          10000
+        ]
+      },
+      "rpc_method": "video.canvas.board.write",
+      "service": [
+        "createCanvas",
+        "upsertShape",
+        "deleteShape",
+        "linkShapes",
+        "unlinkShapes",
+        "saveCanvasSnapshot",
+        "saveCanvasSelection",
+        "saveCanvasViewState",
+        "applyProductionTemplate",
+        "insertGeneratedAsset"
+      ],
+      "result_keys": [
+        "canvas_id",
+        "shape_id",
+        "edge_id",
+        "status"
+      ],
+      "legacy": [
+        "video_canvas_create",
+        "video_canvas_upsert_shape",
+        "video_canvas_delete_shape",
+        "video_canvas_link_shapes",
+        "video_canvas_unlink_shapes",
+        "video_canvas_save_snapshot",
+        "video_canvas_save_selection",
+        "video_canvas_save_view_state",
+        "video_canvas_apply_production_template",
+        "video_canvas_insert_generated_asset"
+      ]
+    },
+    {
+      "op": "video.canvas.review.write",
+      "tool": "video_canvas_review_write",
+      "domain": "canvas",
+      "risk": "write",
+      "resident": false,
+      "display_zh": "审片批注与返修卡",
+      "description": "Register a review annotation on a canvas card and its asset version, create a revision card, update a revision card's status, or export an annotation brief.",
+      "search_keywords": "canvas review annotation note revision card fix status export brief",
+      "input": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "register_annotation",
+            "create_revision_card",
+            "update_revision_card_status",
+            "export_annotation_brief"
+          ],
+          "required": true,
+          "desc": "selects the review write"
+        },
+        "canvas_id": {
+          "type": "string",
+          "desc": "target canvas"
+        },
+        "shape_id": {
+          "type": "string",
+          "desc": "target card"
+        },
+        "annotation_id": {
+          "type": "string",
+          "desc": "source annotation (create_revision_card)"
+        },
+        "screenshot_asset_version_id": {
+          "type": "string",
+          "desc": "screenshot version the annotation refers to"
+        },
+        "annotation_type": {
+          "type": "string",
+          "enum": [
+            "review_note",
+            "prompt_note",
+            "visual_continuity",
+            "production_note",
+            "other"
+          ],
+          "desc": "annotation kind"
+        },
+        "severity": {
+          "type": "string",
+          "desc": "severity label"
+        },
+        "title": {
+          "type": "string",
+          "desc": "title"
+        },
+        "body": {
+          "type": "string",
+          "desc": "body text"
+        },
+        "requested_change": {
+          "type": "string",
+          "desc": "requested change (revision card)"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "open",
+            "in_progress",
+            "resolved",
+            "rejected"
+          ],
+          "desc": "revision card status"
+        },
+        "status_note": {
+          "type": "string",
+          "desc": "status note"
+        },
+        "visibility": {
+          "type": "string",
+          "enum": [
+            "internal",
+            "project",
+            "public_summary"
+          ],
+          "desc": "annotation visibility"
+        },
+        "stage": {
+          "type": "string",
+          "desc": "production stage"
+        },
+        "source_shape_id": {
+          "type": "string",
+          "desc": "originating card (create_revision_card)"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "required_evidence": {
+        "mode": "registry-level selector: selects the review write; the per-mode keys below are then enforced by the service",
+        "shape_id (annotation on a card)": "service.js:2359-2360 assert canvas_id and shape_id",
+        "body (annotation/report content)": "service.js:2396 asserts body",
+        "shape_id (revision card)": "service.js:2526 asserts shape_id"
+      },
+      "mutex": [],
+      "ranges": {},
+      "rpc_method": "video.canvas.review.write",
+      "service": [
+        "registerReviewAnnotation",
+        "createRevisionCard",
+        "updateRevisionCardStatus",
+        "exportAnnotationBrief"
+      ],
+      "result_keys": [
+        "annotation_id",
+        "shape_id",
+        "status"
+      ],
+      "legacy": [
+        "video_canvas_register_review_annotation",
+        "video_canvas_create_revision_card",
+        "video_canvas_update_revision_card_status",
+        "video_canvas_export_annotation_brief"
+      ]
+    },
+    {
+      "op": "video.canvas.widget",
+      "tool": "video_canvas_widget",
+      "domain": "widget",
+      "risk": "read",
+      "resident": false,
+      "display_zh": "画布组件渲染",
+      "description": "Return a native widget render descriptor for the Video Assets infinite canvas.",
+      "search_keywords": "canvas widget render descriptor component display",
+      "input": {
+        "canvas_id": {
+          "type": "string",
+          "desc": "canvas to render"
+        },
+        "project_id": {
+          "type": "string",
+          "desc": "project to render"
+        },
+        "title": {
+          "type": "string",
+          "desc": "widget title"
+        },
+        "display_mode": {
+          "type": "string",
+          "enum": [
+            "inline",
+            "fullscreen",
+            "pip"
+          ],
+          "desc": "presentation mode"
+        },
+        "viewport": {
+          "type": "object",
+          "desc": "viewport hint"
+        }
+      },
+      "required": [],
+      "required_evidence": {
+        "none": "legal to call with no arguments: the descriptor falls back to the workspace default canvas. The regression guardrails assert this stays legal."
+      },
+      "mutex": [],
+      "ranges": {},
+      "rpc_method": "video.canvas.widget",
+      "service": [
+        "renderVideoAssetsCanvasWidget"
+      ],
+      "result_keys": [
+        "widget",
+        "canvas_id",
+        "display_mode"
+      ],
+      "legacy": [
+        "render_video_assets_canvas_widget"
+      ]
+    },
+    {
+      "op": "video_legacy_dispatch",
+      "tool": "video_legacy_dispatch",
+      "rpc_method": "videoAssets.contract.legacyDispatch",
+      "service": [
+        "addProjectRef",
+        "annotateAsset",
+        "applyProductionTemplate",
+        "assetIntegrityScan",
+        "assetTaxonomyReport",
+        "canvasAgentContext",
+        "canvasDoubaoAudioGenerate",
+        "canvasDoubaoAudioPlan",
+        "canvasDreaminaCliGenerateImage",
+        "canvasDreaminaCliGenerateVideo",
+        "canvasDreaminaCliPlan",
+        "canvasDreaminaCliUpscaleImage",
+        "canvasGenerationHandoff",
+        "canvasGenerationPackage",
+        "canvasKieSunoGenerate",
+        "canvasKieSunoPlan",
+        "canvasLint",
+        "canvasWidgetContext",
+        "classifyAsset",
+        "createAssetVersion",
+        "createBranch",
+        "createCanvas",
+        "createEntity",
+        "createGenerationSlot",
+        "createProject",
+        "createRevisionCard",
+        "deleteShape",
+        "doubaoAudioGenerate",
+        "doubaoAudioPlan",
+        "exportAnnotationBrief",
+        "fillGenerationSlot",
+        "generateDerivedFile",
+        "getAsset",
+        "getAssetClassification",
+        "getAssetLineage",
+        "getCanvas",
+        "getCanvasSelection",
+        "getCanvasViewState",
+        "ingestAsset",
+        "insertGeneratedAsset",
+        "kieSunoGenerate",
+        "kieSunoPlan",
+        "linkEntityAsset",
+        "linkShapes",
+        "listAnnotations",
+        "listDerivedFiles",
+        "listProjectRefs",
+        "projectAssetReport",
+        "projectContinuityReport",
+        "registerDerivedFile",
+        "registerReviewAnnotation",
+        "removeProjectRef",
+        "renderVideoAssetsCanvasWidget",
+        "saveCanvasSelection",
+        "saveCanvasSnapshot",
+        "saveCanvasViewState",
+        "saveCopy",
+        "searchAssets",
+        "searchCanvases",
+        "searchEntities",
+        "unlinkShapes",
+        "updateAnnotation",
+        "updateAssetMetadata",
+        "updateAssetRights",
+        "updateGenerationSlot",
+        "updateProjectRef",
+        "updateProjectSpec",
+        "updateRevisionCardStatus",
+        "upsertShape"
+      ],
+      "description": "Migration-window compatibility entry: call one of the 69 original tool names through the reduced surface. The nested \u0007rgs are validated against that legacy tool's own per-mode sub-schema, so a value set that is legal for the wide union but illegal for the chosen branch is refused here.",
+      "legacy": [],
+      "note": "Compatibility entry, not a capability merge: legacy is deliberately EMPTY so it does not inflate the migration matrix or the merged-capability count. It exists so the previous tool names stay callable from the new package during the migration window; remove when callers have migrated. The 69 names it accepts are declared as the legacy_tool input enum.",
+      "required": [
+        "legacy_tool",
+        "args"
+      ],
+      "input": {
+        "legacy_tool": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "render_video_assets_canvas_widget",
+            "video_asset_annotate",
+            "video_asset_annotations",
+            "video_asset_classify",
+            "video_asset_create_branch",
+            "video_asset_create_version",
+            "video_asset_derived_files",
+            "video_asset_generate_derived_file",
+            "video_asset_get",
+            "video_asset_get_classification",
+            "video_asset_ingest",
+            "video_asset_integrity_scan",
+            "video_asset_lineage",
+            "video_asset_register_derived_file",
+            "video_asset_save_copy",
+            "video_asset_search",
+            "video_asset_taxonomy_report",
+            "video_asset_update_annotation",
+            "video_asset_update_metadata",
+            "video_asset_update_rights",
+            "video_audio_doubao_generate",
+            "video_audio_doubao_plan",
+            "video_audio_kie_suno_generate",
+            "video_audio_kie_suno_plan",
+            "video_canvas_agent_context",
+            "video_canvas_apply_production_template",
+            "video_canvas_create",
+            "video_canvas_create_generation_slot",
+            "video_canvas_create_revision_card",
+            "video_canvas_delete_shape",
+            "video_canvas_doubao_audio_generate",
+            "video_canvas_doubao_audio_plan",
+            "video_canvas_dreamina_cli_generate_image",
+            "video_canvas_dreamina_cli_generate_video",
+            "video_canvas_dreamina_cli_plan",
+            "video_canvas_dreamina_cli_upscale_image",
+            "video_canvas_export_annotation_brief",
+            "video_canvas_fill_generation_slot",
+            "video_canvas_generation_handoff",
+            "video_canvas_generation_package",
+            "video_canvas_get",
+            "video_canvas_get_selection",
+            "video_canvas_get_view_state",
+            "video_canvas_insert_generated_asset",
+            "video_canvas_kie_suno_audio_generate",
+            "video_canvas_kie_suno_audio_plan",
+            "video_canvas_link_shapes",
+            "video_canvas_lint",
+            "video_canvas_register_review_annotation",
+            "video_canvas_save_selection",
+            "video_canvas_save_snapshot",
+            "video_canvas_save_view_state",
+            "video_canvas_search",
+            "video_canvas_unlink_shapes",
+            "video_canvas_update_generation_slot",
+            "video_canvas_update_revision_card_status",
+            "video_canvas_upsert_shape",
+            "video_canvas_widget_context",
+            "video_entity_create",
+            "video_entity_link_asset",
+            "video_entity_search",
+            "video_project_add_asset_ref",
+            "video_project_asset_report",
+            "video_project_continuity_report",
+            "video_project_create",
+            "video_project_refs",
+            "video_project_remove_asset_ref",
+            "video_project_update_asset_ref",
+            "video_project_update_spec"
+          ],
+          "desc": "the original tool name to call"
+        },
+        "args": {
+          "type": "object",
+          "required": true,
+          "desc": "the original tool's arguments, validated against that tool's own narrow sub-schema"
+        }
+      },
+      "required_evidence": {
+        "legacy_tool": "must be one of the 69 declared legacy names; the dispatcher refuses anything else",
+        "args": "validated by the plugin's own validateToolInput against the per-mode sub-schema emitted in schemas.json#by_mode, so branch-illegal values are rejected at the real handler entry"
+      },
+      "result_keys": [
+        "legacy_tool",
+        "service_method",
+        "result"
+      ],
+      "domain": "migration",
+      "display_zh": "旧工具名兼容入口",
+      "risk": "high"
+    }
+  ]
+}

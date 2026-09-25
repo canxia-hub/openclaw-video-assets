@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { buildLabelDetailed } from "../lib/version";
 import { useNavigate } from "react-router-dom";
 import { rpc } from "../lib/rpc";
 import { useAuth } from "../lib/auth";
@@ -77,7 +78,12 @@ export default function SettingsPage() {
           <div className="mb-2 text-sm font-medium text-text-primary">关于</div>
           <div className="divide-y divide-border-subtle">
             <Field label="工作台">视频资产工作台（video-assets workbench）</Field>
-            <Field label="前端版本">v1.3 · P3 生成暂存版</Field>
+            {/*
+              Build-injected (src/lib/version.ts). This field used to print the literal "v1.3 · P3 生成暂存版"
+              while the chrome printed v1.5 - the two halves of audit finding 12. The commit is shown here
+              because a version alone cannot distinguish two builds of the same version.
+            */}
+            <Field label="前端版本">{buildLabelDetailed}</Field>
             <Field label="技术栈">Vite 6 · React 18 · TypeScript · Tailwind v4 · React Flow</Field>
           </div>
         </section>

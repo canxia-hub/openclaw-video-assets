@@ -1,0 +1,9 @@
+{
+  "name": "project-asset-manager",
+  "description": "虚拟动画工作室项目与素材管理技能。用于创建新项目、管理素材目录、快速分类下载素材、建立项目 - 素材映射关系。",
+  "tags": ["project", "asset", "management", "template", "classification"],
+  "openclaw": {
+    "emoji": "📁",
+    "always": false
+  }
+}

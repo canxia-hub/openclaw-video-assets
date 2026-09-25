@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-const DEFAULT_REPO = path.join(process.env.USERPROFILE ?? process.env.HOME ?? ".", ".openclaw-video-assets");
+const DEFAULT_REPO = "C:/Users/Administrator/.openclaw-video-assets";
 const repoRoot = process.argv.find((arg) => arg.startsWith("--repo="))?.slice("--repo=".length) ?? DEFAULT_REPO;
 const cardsRoot = process.argv.find((arg) => arg.startsWith("--cards-root="))?.slice("--cards-root=".length) ?? null;
 const dbPath = path.join(repoRoot, "metadata", "video-assets.sqlite");

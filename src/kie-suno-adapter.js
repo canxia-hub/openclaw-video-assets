@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { normalizeExternalCallError, httpFailure, upstreamFailure, redactText, createTimeoutGuard, readResponseText, readResponseBody, EXTERNAL_ERROR_CODES } from "./external-call.js";
 
 export const KIE_SUNO_SCHEMA_VERSION = "kie_suno_request_v1";
 export const KIE_SUNO_PROVIDER = "kie.ai/suno-api";
@@ -82,6 +83,26 @@ export function normalizeKieSunoRequest(input = {}, context = {}) {
       negativeTags: String(input.negativeTags ?? input.negative_tags ?? input.request?.negativeTags ?? ""),
       callBackUrl: String(input.callBackUrl ?? input.callback_url ?? input.request?.callBackUrl ?? ""),
       ...(input.vocalGender ?? input.request?.vocalGender ? { vocalGender: String(input.vocalGender ?? input.request?.vocalGender) } : {}),
+      // 官方文档逐项列出的可选参数：仅在调用方显式提供时出现，保留原拼写便于适配器映射
+      ...(() => {
+        const optional = {};
+        const pickFirst = (...values) => values.find((value) => value !== undefined && value !== null && value !== "");
+        const duration = pickFirst(input.duration ?? input.request?.duration);
+        if (duration !== undefined) optional.duration = clampInteger(duration, 10, 360);
+        const styleWeight = pickFirst(input.styleWeight ?? input.request?.styleWeight);
+        if (styleWeight !== undefined) optional.styleWeight = clampNumber(styleWeight, 0, 1);
+        const weirdness = pickFirst(input.weirdnessConstraint ?? input.request?.weirdnessConstraint);
+        if (weirdness !== undefined) optional.weirdnessConstraint = clampNumber(weirdness, 0, 1);
+        const audioWeight = pickFirst(input.audioWeight ?? input.request?.audioWeight);
+        if (audioWeight !== undefined) optional.audioWeight = clampNumber(audioWeight, 0, 1);
+        const variety = pickFirst(input.variety ?? input.request?.variety);
+        if (variety !== undefined) optional.variety = clampInteger(variety, 0, 4);
+        const personaId = pickFirst(input.personaId ?? input.request?.personaId);
+        if (personaId !== undefined) optional.personaId = String(personaId);
+        const personaModel = pickFirst(input.personaModel ?? input.request?.personaModel);
+        if (personaModel !== undefined) optional.personaModel = String(personaModel);
+        return optional;
+      })(),
       ...providerParameters
     },
     execution: {
@@ -127,9 +148,10 @@ export function normalizeKieSunoRequest(input = {}, context = {}) {
   };
 }
 
-export function validateKieSunoRequest(request) {
+export function validateKieSunoRequest(request, { apiKey: configuredApiKey } = {}) {
   const blockers = [];
   const warnings = [];
+  const keyResolution = resolveKieApiKey(configuredApiKey);
   const promptLimit = promptLimitForModel(request.request.model, request.request.customMode);
   const styleLimit = styleLimitForModel(request.request.model);
 
@@ -148,7 +170,7 @@ export function validateKieSunoRequest(request) {
   if (countChars(request.request.title) > 100) blockers.push("title exceeds 100 characters");
   if (request.execution.execute && !request.execution.accept_cost) blockers.push("execute=true requires accept_cost=true");
   if (!["mock", "api"].includes(request.execution.backend)) blockers.push("execution.backend must be mock or api");
-  if (request.execution.backend === "api" && !getKieApiKey()) blockers.push(`${KIE_API_KEY_ENV} is required for backend=api`);
+  if (request.execution.backend === "api" && !keyResolution.apiKey) blockers.push(`${KIE_API_KEY_ENV} is required for backend=api`);
   if (request.handoff.track_role === "music" && !request.handoff.dialogue_priority) warnings.push("用于视频时建议补充 dialogue_priority，避免音乐遮挡对白。");
   if (request.rights.output !== "unknown") warnings.push("KIE/Suno 输出默认应保持 rights.output=unknown，公开交付前需要人工授权复核。");
 
@@ -158,7 +180,7 @@ export function validateKieSunoRequest(request) {
     warnings,
     checks: {
       endpoint: `${KIE_SUNO_BASE_URL}${request.endpoint}`,
-      auth: `${KIE_API_KEY_ENV} environment variable`,
+      auth: keyResolution.source === "config" ? `${KIE_API_KEY_ENV} via plugin config audio.kie.apiKey` : `${KIE_API_KEY_ENV} environment variable`,
       prompt_chars: countChars(request.request.prompt),
       prompt_limit: promptLimit,
       style_chars: countChars(request.request.style),
@@ -171,8 +193,8 @@ export function validateKieSunoRequest(request) {
   };
 }
 
-export async function runKieSunoGeneration(request, { outputDir } = {}) {
-  if (request.execution.backend === "api") return runKieSunoApiGeneration(request, { outputDir });
+export async function runKieSunoGeneration(request, { outputDir, apiKey } = {}) {
+  if (request.execution.backend === "api") return runKieSunoApiGeneration(request, { outputDir, apiKey });
   const dir = outputDir ?? request.execution.output_dir ?? process.cwd();
   await fs.promises.mkdir(dir, { recursive: true });
   const filePath = path.join(dir, mockAudioFileName(request));
@@ -217,9 +239,9 @@ function normalizeEndpoint(value) {
   return endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
 }
 
-async function runKieSunoApiGeneration(request, { outputDir } = {}) {
+async function runKieSunoApiGeneration(request, { outputDir, apiKey: configuredApiKey } = {}) {
   const startedAt = new Date().toISOString();
-  const submit = await kieFetch("POST", request.endpoint, buildKieSunoApiPayload(request), request.execution.timeout_ms);
+  const submit = await kieFetch("POST", request.endpoint, buildKieSunoApiPayload(request), request.execution.timeout_ms, configuredApiKey);
   const taskId = extractTaskId(submit);
   if (!taskId) throw new Error(`KIE Suno submit succeeded but no taskId was found in response: ${JSON.stringify(sanitizeKieResult(submit))}`);
   if (!request.execution.poll_result) {
@@ -235,7 +257,7 @@ async function runKieSunoApiGeneration(request, { outputDir } = {}) {
       remote_urls: []
     };
   }
-  const record = await pollKieSunoRecord(taskId, request);
+  const record = await pollKieSunoRecord(taskId, request, configuredApiKey);
   const status = extractStatus(record);
   if (FAILURE_STATUSES.has(status)) throw new Error(`KIE Suno task failed: ${status}`);
   const remoteUrls = extractAudioUrls(record);
@@ -266,38 +288,63 @@ async function runKieSunoApiGeneration(request, { outputDir } = {}) {
   };
 }
 
-async function kieFetch(method, endpoint, payload, timeoutMs) {
-  const apiKey = getKieApiKey();
+async function kieFetch(method, endpoint, payload, timeoutMs, configuredApiKey) {
+  const apiKey = resolveKieApiKey(configuredApiKey).apiKey;
   if (!apiKey) throw new Error(`${KIE_API_KEY_ENV} is required`);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 超时窗口覆盖**请求 + 正文读取**：收到响应头**不清**计时器
+  const guard = createTimeoutGuard(timeoutMs, { provider: KIE_SUNO_PROVIDER, endpoint: `${KIE_SUNO_BASE_URL}${endpoint}` });
+  const target = `${KIE_SUNO_BASE_URL}${endpoint}`;
   let response;
+  let text;
   try {
-    response = await fetch(`${KIE_SUNO_BASE_URL}${endpoint}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: payload ? JSON.stringify(payload) : undefined,
-      signal: controller.signal
-    });
+    try {
+      response = await fetch(target, {
+        method,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: payload ? JSON.stringify(payload) : undefined,
+        signal: guard.signal
+      });
+    } catch (err) {
+      // 超时 / 主动中止 / 网络失败规范化：保留原始信息（经脱敏），附 provider、端点与阶段
+      throw normalizeExternalCallError(err, {
+        provider: KIE_SUNO_PROVIDER,
+        endpoint: target,
+        phase: guard.timedOut ? "http_timeout" : "http_request",
+        hint: guard.timedOut ? EXTERNAL_ERROR_CODES.TIMEOUT : null
+      });
+    }
+    // 正文读取留在窗口内；越窗或正文异常均在这里规范化
+    text = await readResponseText({ response, guard, provider: KIE_SUNO_PROVIDER, endpoint: target });
   } finally {
-    clearTimeout(timer);
+    guard.clear();
   }
-  const text = await response.text();
   const result = parseJsonOrRaw(text);
-  if (!response.ok) throw new Error(`KIE Suno HTTP ${response.status}: ${text}`);
+  if (!response.ok) {
+    const normalized = httpFailure({ provider: KIE_SUNO_PROVIDER, endpoint: target, phase: "http_status", status: response.status, detail: text.slice(0, 400) });
+    normalized.message = redactText(`KIE Suno HTTP ${response.status}: ${text}`);
+    throw normalized;
+  }
   if (result && typeof result === "object" && result.code != null && Number(result.code) !== 200) {
-    throw new Error(`KIE Suno API code ${result.code}: ${result.msg ?? result.message ?? "request failed"}`);
+    const normalized = upstreamFailure({
+      provider: KIE_SUNO_PROVIDER,
+      endpoint: target,
+      httpStatus: response.status,
+      upstreamCode: result.code,
+      message: result.msg ?? result.message ?? "request failed"
+    });
+    normalized.message = redactText(`KIE Suno API code ${result.code}: ${result.msg ?? result.message ?? "request failed"}`);
+    throw normalized;
   }
   return result;
 }
 
-async function pollKieSunoRecord(taskId, request) {
+async function pollKieSunoRecord(taskId, request, configuredApiKey) {
   const deadline = Date.now() + request.execution.timeout_ms;
   while (true) {
-    const record = await kieFetch("GET", `/api/v1/generate/record-info?taskId=${encodeURIComponent(taskId)}`, null, request.execution.timeout_ms);
+    const record = await kieFetch("GET", `/api/v1/generate/record-info?taskId=${encodeURIComponent(taskId)}`, null, request.execution.timeout_ms, configuredApiKey);
     const status = extractStatus(record);
     if (TERMINAL_STATUSES.has(status)) return record;
     if (Date.now() >= deadline) throw new Error(`KIE Suno polling timed out for taskId=${taskId}`);
@@ -395,6 +442,14 @@ function getKieApiKey() {
   return String(process.env[KIE_API_KEY_ENV] ?? "").trim();
 }
 
+function resolveKieApiKey(configuredValue) {
+  const fromConfig = typeof configuredValue === "string" ? configuredValue.trim() : "";
+  if (fromConfig) return { apiKey: fromConfig, source: "config" };
+  const fromEnv = getKieApiKey();
+  if (fromEnv) return { apiKey: fromEnv, source: "env" };
+  return { apiKey: "", source: "missing" };
+}
+
 function promptLimitForModel(model, customMode) {
   if (!customMode) return 500;
   return String(model).toUpperCase() === "V4" ? 3000 : 5000;
@@ -414,6 +469,12 @@ function normalizeObject(value) {
 
 function countChars(value) {
   return Array.from(String(value ?? "")).length;
+}
+
+function clampNumber(value, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return min;
+  return Math.min(max, Math.max(min, number));
 }
 
 function clampInteger(value, min, max) {
@@ -455,17 +516,27 @@ function mimeTypeForPath(filePath) {
 }
 
 async function downloadFile(url, filePath, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 下载路径同样把超时窗口盖到**正文（字节流）读取**：旧实现在收到响应头后就清计时器。
+  const guard = createTimeoutGuard(timeoutMs, { provider: KIE_SUNO_PROVIDER, endpoint: url });
   let response;
+  let buffer;
   try {
-    response = await fetch(url, { signal: controller.signal });
+    try {
+      response = await fetch(url, { signal: guard.signal });
+    } catch (err) {
+      throw normalizeExternalCallError(err, {
+        provider: KIE_SUNO_PROVIDER,
+        endpoint: url,
+        phase: guard.timedOut ? "download_timeout" : "download_request",
+        hint: guard.timedOut ? EXTERNAL_ERROR_CODES.TIMEOUT : null
+      });
+    }
+    if (!response.ok) throw httpFailure({ provider: KIE_SUNO_PROVIDER, endpoint: url, phase: "download_status", status: response.status });
+    buffer = await readResponseBody({ response, guard, provider: KIE_SUNO_PROVIDER, endpoint: url, as: "buffer", phase: "download_body" });
   } finally {
-    clearTimeout(timer);
+    guard.clear();
   }
-  if (!response.ok) throw new Error(`KIE Suno output download failed: status=${response.status}`);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (!buffer.length) throw new Error(`KIE Suno output download is empty: ${url}`);
+  if (!buffer.length) throw new Error(`KIE Suno output download is empty: ${redactText(url)}`);
   await fs.promises.writeFile(filePath, buffer, { flag: "wx" });
 }
 

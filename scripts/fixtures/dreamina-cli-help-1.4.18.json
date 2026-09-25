@@ -1,0 +1,127 @@
+{
+  "fixture_schema": "dreamina_cli_help_fixture_v1",
+  "source": {
+    "kind": "vendor_cli_help",
+    "cli_path": "C:\\Users\\Administrator\\bin\\dreamina.exe",
+    "cli_bytes": 31936512,
+    "cli_mtime": "2026-09-19T23:55:49+08:00",
+    "cli_sha256": "13a817e455179ab994495eedb875cf845348d05f526b21c2ef207e1fc47f6014",
+    "cli_version": "1.4.18",
+    "cli_build": "ec1b9fa",
+    "cli_build_time": "2026-09-09T09:09:35Z",
+    "release_date": "2026-09-10",
+    "captured_at": "2026-09-20T23:44:39+08:00",
+    "captured_by": "REN-09 scripts/01-capture-cli-capability.ps1",
+    "raw_artifacts": "projects/video-platform-renewal-20260920/implementation/REN-09/evidence/cli/"
+  },
+  "commands": {
+    "image2video": {
+      "model_version": ["seedance1.0fast", "seedance1.5pro", "seedance2.0", "seedance2.0fast", "seedance2.0_vip", "seedance2.0fast_vip", "seedance2.0mini", "seedance2.5"],
+      "default_model_version": "seedance2.0_vip",
+      "ratio": ["1:1", "3:4", "16:9", "4:3", "9:16", "21:9"],
+      "ratio_rule": "omit to infer from first frame; seedance2.5 rejects an explicit ratio",
+      "video_resolution": {
+        "seedance2.5": ["480p", "720p", "1080p"],
+        "seedance2.0_vip": ["720p", "1080p", "4k"],
+        "*": ["720p"]
+      },
+      "duration": {
+        "seedance1.0fast": [5, 10],
+        "seedance1.5pro": [5, 12],
+        "seedance2.5": [4, 30],
+        "*": [4, 15]
+      }
+    },
+    "text2video": {
+      "model_version": ["seedance2.0", "seedance2.0fast", "seedance2.0_vip", "seedance2.0fast_vip", "seedance2.0mini", "seedance2.5"],
+      "default_model_version": "seedance2.0fast",
+      "ratio": ["1:1", "3:4", "16:9", "4:3", "9:16", "21:9"],
+      "video_resolution": {
+        "seedance2.5": ["480p", "720p", "1080p"],
+        "seedance2.0_vip": ["720p", "1080p", "4k"],
+        "*": ["720p"]
+      },
+      "duration": {
+        "seedance2.5": [4, 30],
+        "*": [4, 15]
+      }
+    },
+    "multimodal2video": {
+      "model_version": ["seedance2.0", "seedance2.0fast", "seedance2.0_vip", "seedance2.0fast_vip", "seedance2.0mini", "seedance2.5"],
+      "default_model_version": "seedance2.0_vip",
+      "ratio": ["1:1", "3:4", "16:9", "4:3", "9:16", "21:9"],
+      "video_resolution": {
+        "seedance2.5": ["480p", "720p", "1080p"],
+        "seedance2.0_vip": ["720p", "1080p", "4k"],
+        "*": ["720p"]
+      },
+      "duration": {
+        "seedance2.5": [4, 30],
+        "*": [4, 15]
+      },
+      "input_limits": {
+        "seedance2.5": { "image": 30, "video": 10, "audio": 10, "total": 50, "audio_only": true, "media_duration": [2, 30] },
+        "*": { "image": 9, "video": 3, "audio": 3, "total": 12, "audio_only": false, "media_duration": [2, 15] }
+      }
+    },
+    "text2image": {
+      "model_version": ["3.0", "3.1", "4.0", "4.1", "4.5", "4.6", "4.7", "5.0", "5.0Pro"],
+      "default_model_version": "5.0",
+      "ratio": ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"],
+      "generate_num": [1, 10],
+      "resolution_type": {
+        "3.0": ["1k", "2k"],
+        "3.1": ["1k", "2k"],
+        "4.0": ["2k", "4k"],
+        "4.1": ["2k", "4k"],
+        "4.5": ["2k", "4k"],
+        "4.6": ["2k", "4k"],
+        "4.7": ["2k", "4k"],
+        "5.0": ["2k", "4k"],
+        "5.0Pro": ["1.5k", "2k", "4k"]
+      }
+    },
+    "image2image": {
+      "model_version": ["4.0", "4.1", "4.5", "4.6", "4.7", "5.0", "5.0Pro"],
+      "default_model_version": "5.0",
+      "ratio": ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"],
+      "generate_num": [1, 10],
+      "max_input_images": 10,
+      "resolution_type": {
+        "4.0": ["2k", "4k"],
+        "4.1": ["2k", "4k"],
+        "4.5": ["2k", "4k"],
+        "4.6": ["2k", "4k"],
+        "4.7": ["2k", "4k"],
+        "5.0": ["2k", "4k"],
+        "5.0Pro": ["1.5k", "2k", "4k"]
+      }
+    },
+    "image_upscale": {
+      "resolution_type": ["2k", "4k", "8k"],
+      "exposes_model_version": false
+    }
+  },
+  "custom_size_limits": {
+    "1k": { "side": [512, 2016], "total_pixels_max": 1763584 },
+    "1.5k": { "side": [972, 2268], "total_pixels_max": 2359296 },
+    "2k": { "side": [768, 3072], "total_pixels_max": 4194304 },
+    "4k": { "side": [1536, 6240], "total_pixels_max": 16777216 }
+  },
+  "deprecation_and_scope_notes": [
+    "CLI --help 不再列出 3.0fast/3.0_fast/3.0pro/3.0_pro/3.5pro/3.5_pro；这些值只在后端 i2v version 白名单内。",
+    "CLI 明确说明：duration / video_resolution / ratio 被严格校验，不支持或 legacy 值会被拒绝而非静默调整。",
+    "部分模型首次使用需先在即梦 Web 端完成一次生成，否则提交返回 AigcComplianceConfirmationRequired。",
+    "listed model values are the CLI's public support set; runtime availability is determined by backend configuration."
+  ],
+  "commands_not_wrapped_by_plugin": [
+    "frames2video",
+    "multiframe2video",
+    "session",
+    "list_task",
+    "query_result",
+    "user_credit",
+    "logout",
+    "relogin"
+  ]
+}

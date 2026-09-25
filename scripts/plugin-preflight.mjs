@@ -75,19 +75,27 @@ for (const rpcName of requiredRpc) {
   assert.ok(indexSource.includes(`"${rpcName}"`), `missing RPC registration: ${rpcName}`);
 }
 
+// REN-02: routes are registered through the single base-path/segment source, so this check now
+// asserts (a) the default base path still reproduces the eight legacy URLs, (b) every route segment
+// constant is actually used in the registration code, and (c) no route path literal crept back in.
+const { DEFAULT_BASE_PATH: PREFLIGHT_BASE_PATH, ROUTE_SEGMENTS: PREFLIGHT_SEGMENTS } = await import("../src/base-path.js");
 const requiredRoutes = [
-  "/__openclaw__/video-assets/auth/login",
-  "/__openclaw__/video-assets/auth/logout",
-  "/__openclaw__/video-assets/auth/status",
-  "/__openclaw__/video-assets/rpc/",
-  "/__openclaw__/video-assets/file/",
-  "/__openclaw__/video-assets/thumb/",
-  "/__openclaw__/video-assets/proxy/",
-  "/__openclaw__/video-assets/workbench/"
+  [PREFLIGHT_SEGMENTS.authLogin, "authLogin"],
+  ["auth/login", "authLogin"],
+  [PREFLIGHT_SEGMENTS.authLogout, "authLogout"],
+  [PREFLIGHT_SEGMENTS.authStatus, "authStatus"],
+  [PREFLIGHT_SEGMENTS.rpc, "rpc"],
+  [PREFLIGHT_SEGMENTS.file, "file"],
+  [PREFLIGHT_SEGMENTS.thumb, "thumb"],
+  [PREFLIGHT_SEGMENTS.proxy, "proxy"],
+  [PREFLIGHT_SEGMENTS.workbench, "workbench"]
 ];
-for (const route of requiredRoutes) {
-  assert.ok(indexSource.includes(route), `missing HTTP route: ${route}`);
+assert.equal(PREFLIGHT_BASE_PATH, "/__openclaw__/video-assets", "the default base path must stay backward compatible");
+for (const [path, segment] of requiredRoutes) {
+  const full = path === PREFLIGHT_SEGMENTS.workbench ? `ROUTE_SEGMENTS.${segment}` : `ROUTE_SEGMENTS.${segment}`;
+  assert.ok(indexSource.includes(full), `route segment ${segment} must be registered through ROUTE_SEGMENTS (${path})`);
 }
+assert.ok(!/path: "\/__openclaw__\/video-assets/.test(indexSource), "route paths must not be hard-coded literals any more (single base path source)");
 assert.ok(!indexSource.includes("thumbnail route is reserved but not implemented"), "thumbnail route must not remain a 501 placeholder");
 assert.ok(!indexSource.includes("proxy route is reserved but not implemented"), "proxy route must not remain a 501 placeholder");
 assert.ok(indexSource.includes("handleDerivedFileRequest"), "derived file HTTP route handler must be registered");

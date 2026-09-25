@@ -13,6 +13,15 @@ export class RpcError extends Error {
     super(message);
     this.name = "RpcError";
   }
+
+  /**
+   * REN-08：服务端以 409 报告画布版本冲突，并且是**唯一**需要用户介入的写入失败。
+   * 把它做成一个可判定的属性而不是靠字符串匹配，是因为“冲突”与“网络断了”对用户的含义
+   * 完全不同：前者要重新读取文档，后者可以重试。混为一谈会让重试覆盖别人的编辑。
+   */
+  get isRevisionConflict(): boolean {
+    return this.status === 409;
+  }
 }
 
 async function http<T>(url: string, init?: RequestInit): Promise<T> {
@@ -106,11 +115,25 @@ export interface AssetVersion {
   asset_id: string;
   version_label?: string;
   file_name?: string;
+  /**
+   * 服务端 asset_versions 表实际返回的字段。旧声明里缺了 extension 与 duration_ms，预览组件因此取不到
+   * 扩展名与毫秒时长，只能靠 mime_type 猜类型、靠秒数字段猜时长。
+   */
+  extension?: string | null;
   mime_type?: string;
+  container?: string | null;
   size_bytes?: number;
-  width?: number;
-  height?: number;
-  duration_seconds?: number;
+  sha256?: string | null;
+  width?: number | null;
+  height?: number | null;
+  /** 毫秒（表列 duration_ms）。 */
+  duration_ms?: number | null;
+  frame_rate?: number | null;
+  sample_rate?: number | null;
+  channels?: number | null;
+  codec?: string | null;
+  change_summary?: string | null;
+  created_at?: string;
 }
 
 export interface ProjectRef {
@@ -194,11 +217,85 @@ export interface CanvasDocument {
   project_id?: string;
   title?: string;
   status?: string;
+  /**
+   * REN-08：文档版本号。只在画布卡片/连线发生变化时递增；视口与选择属于视图状态，不参与此计数。
+   * 客户端每次写入都必须引用它（expected_revision），否则并发编辑会被静默覆盖。
+   */
+  revision?: number;
+  /**
+   * REN-08：服务端解析出的编辑策略。editing=false 时服务端会拒绝一切画布命令（回滚开关），
+   * 客户端读同一个值来决定要不要给出编辑手势。
+   */
+  editing?: {
+    editing: boolean;
+    viewportDebounceMs: number;
+    readOnlyReason: string | null;
+    clamped?: string[];
+  };
   shape_count?: number;
   edge_count?: number;
   viewport?: { x: number; y: number; zoom: number; width?: number; height?: number };
   shapes: CanvasShape[];
   edges: CanvasEdge[];
+}
+
+/** REN-08：一条画布命令。字段随 type 变化，由服务端 canvas-commands.js 校验。 */
+export interface CanvasCommand {
+  type?:
+    | "move_shapes"
+    | "update_shapes"
+    | "create_shapes"
+    | "delete_shapes"
+    | "create_edges"
+    | "delete_edges"
+    | string;
+  positions?: { shape_id: string; x: number; y: number }[];
+  updates?: { shape_id: string; [key: string]: unknown }[];
+  shapes?: Record<string, unknown>[];
+  shape_ids?: string[];
+  edges?: Record<string, unknown>[];
+  edge_ids?: string[];
+  [key: string]: unknown;
+}
+
+/** 应用一条命令的结果。undo_commands 是服务端记录的逆命令，撤销即“把逆命令当新命令应用”。 */
+export interface CanvasCommandResult {
+  canvas_id: string;
+  command_id: string;
+  command_type: string;
+  base_revision: number;
+  revision: number;
+  applied: { [key: string]: unknown };
+  created_shape_ids: string[];
+  created_edge_ids: string[];
+  removed_shape_ids: string[];
+  removed_edge_ids: string[];
+  undo_commands: CanvasCommand[];
+  updated_at: string;
+  /** true 表示这条命令此前已应用过（重试/离线队列重复投递），本次未重复生效。 */
+  replayed: boolean;
+}
+
+export interface CanvasCommandLogEntry {
+  command_id: string;
+  revision: number;
+  base_revision: number;
+  command_type: string;
+  command: CanvasCommand;
+  inverse_commands: CanvasCommand[];
+  actor_id: string;
+  client_id?: string | null;
+  created_at: string;
+}
+
+export interface CanvasCommandLog {
+  version?: number;
+  canvas_id: string;
+  revision: number;
+  command_count: number;
+  limit: number;
+  order: string;
+  commands: CanvasCommandLogEntry[];
 }
 
 export interface CanvasSelectionState {
@@ -243,5 +340,38 @@ export interface AuditEvent {
   action: string;
   detail?: string;
   actor?: string;
+  created_at: string;
+}
+
+export interface GenerationJob {
+  job_id: string;
+  idempotency_key: string;
+  entry: string;
+  provider: string;
+  surface: string;
+  actor_id: string;
+  state: string;
+  phase: string;
+  estimated_credits: number;
+  actual_credits?: number | null;
+  budget_state: string;
+  provider_request_id?: string | null;
+  provider_submit_state: string;
+  local_cancel_requested: boolean;
+  remote_cancel_state: string;
+  error_code?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GenerationJobEvent {
+  event_id: string;
+  job_id: string;
+  seq: number;
+  event_type: string;
+  state: string;
+  phase: string;
+  data: Record<string, unknown>;
   created_at: string;
 }

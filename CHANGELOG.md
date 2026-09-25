@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.5.0 - 2026-09-26
+
+### Added
+
+- Native Dreamina/Seedance drive from the canvas: seedance2.5 (text/image/multimodal-to-video, 480p-1080p, 4-30s) and Seedream 5.0Pro images, plus `video_canvas_dreamina_cli_generate_image` and `video_canvas_dreamina_cli_upscale_image` (2k/4k/8k). Model capabilities consolidated into single spec tables (`DREAMINA_VIDEO_MODEL_SPECS` / `DREAMINA_IMAGE_MODEL_SPECS`).
+- Generation jobs subsystem: submit/poll/reconcile phases persisted across restarts (`pending_phase`), bounded download retries, slot-column tracking, crash-restart and recovery-reentry suites.
+- Security/domain hardening: scoped auth for uploads/file/thumb/proxy, CSRF origin policy, Range/206/416 media serving, ETag/Last-Modified, session cookie flags, logout invalidation, proxy trust controls, generation policy gates with fail-closed authorization.
+- Audio lanes: Doubao Seed audio 1.0 plan/generate with cleared-marking discipline; KIE Suno plan/generate (authorization defaults to unknown).
+- npm packaging for 2026.9.5 host preload: explicit `files` whitelist including `openclaw.plugin.json`, reproducible `build:ui`/`prepack`, root `package-lock.json`, manifest version aligned to package version; tarball verified to load on OpenClaw 2026.9.3 and 2026.9.5 (69 tools / 89 gateway methods / 9 http routes, zero duplicate registration across 3 cold rounds each).
+
+### Fixed
+
+- Canvas generation gate no longer treats `draft_output` write-back cards as inputs; handoff now forwards `model_version` so multimodal limits are validated against the requested model.
+- QC judges the run's own derived spec (no fixture-constant expectations); burn-in probe selects the first cue with a measurable gap.
+- Dreamina CLI uploads materialize content-addressed `.blob` files with correct extensions before handing them to the CLI.
+
+### Changed
+
+- Registration surface: 69 tools declared in `contracts.tools` (was 45 at v1.4.x).
 ## 1.4.2 - 2026-08-13
 
 ### Fixed

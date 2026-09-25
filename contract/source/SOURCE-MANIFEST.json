@@ -1,0 +1,58 @@
+{
+  "note": "The reduced contract surface is GENERATED. This manifest lets a reviewer verify and reproduce every generated artifact from the sources in this directory instead of trusting generated data on its own.",
+  "generated_from": "contract/source/domain-contract-registry.json",
+  "generated_by": "contract/source/contract-generator.mjs",
+  "candidate_commit": "3aab6c8ad71d3e7be0c729bdb4fde45290e969b3",
+  "reproduce_command": "node contract/source/contract-generator.mjs --registry contract/source/domain-contract-registry.json --out <out-dir> --candidate <repo>@<commit> --inventory <inventory.json> --runtime-out src/contract/registry.generated.js --baseline-manifest openclaw.plugin.json --plugin-manifest-out <pkg>/openclaw.plugin.json --l1-baseline <l1-baseline.json>",
+  "verified_by": [
+    "harness/contract-consistency.mjs",
+    "harness/param-compatibility.mjs",
+    "harness/contract-semantics.mjs",
+    "harness/contract-runtime-checks.mjs",
+    "harness/run-contract-matrix.ps1 (real host)"
+  ],
+  "source_sha256": {
+    "domain-contract-registry.json": "dcfec1410bef900019d4e3c82ea0ad7b7a83e5793f2d00ca5c242f174dd309c4",
+    "contract-generator.mjs": "b81903d257ca14108c1ac09c1294d52eb5767f59a558d1ebd398ddac7d4cc59f"
+  },
+  "generated_artifacts": {
+    "docs.md": {
+      "sha256": "93c8643c539c11dc4c0dcca28b1f0b028e4f0a002043fe1c7abaa2a887862de9",
+      "bytes": 8413
+    },
+    "generation-summary.json": {
+      "sha256": "cc34173598a853b1135b5e5b47271922a2545daf1207c6da1eda9018f614a365",
+      "bytes": 1675
+    },
+    "legacy-alias.json": {
+      "sha256": "1350e50a91e246c1a5502061b14da8700e5141c794188ff4dd83024dd72af937",
+      "bytes": 11761
+    },
+    "manifest.json": {
+      "sha256": "f70e8a058a940c6f11fb5786eb8572be9c5050a7cbff872ba345fb5f8bedc30b",
+      "bytes": 65707
+    },
+    "migration-matrix.json": {
+      "sha256": "dbbd95a0c4ac0cdce33adb1a6718f77ead757c7d2209b23d1296f95eb3c853f8",
+      "bytes": 35070
+    },
+    "rpc-map.json": {
+      "sha256": "6408326b8d409d028153d7338fbc5af53140108d931ec7b05a00d5ea936f04fa",
+      "bytes": 6529
+    },
+    "schemas.json": {
+      "sha256": "dd0421176537ec50080471c37118daa58508bdd9902caa52fa7315f6215330f2",
+      "bytes": 274474
+    }
+  },
+  "runtime_modules": {
+    "src/contract/registry.generated.js": {
+      "sha256": "831d5b299ac0d3caceddfa39372c15582d018648105349db0a376f0148330ce1",
+      "bytes": 227974
+    },
+    "src/contract/contract-surface-core.js": {
+      "sha256": "c69d5fa7f6703a650bf46a75876df4890188b0628f1defbeec587dbdb7427ed8",
+      "bytes": 21330
+    }
+  }
+}

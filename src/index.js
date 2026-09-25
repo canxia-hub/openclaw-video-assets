@@ -1,26 +1,93 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildOperationSpecs, CONTRACT_TOOL_NAMES, allAdapterTargets } from "./contract/contract-surface-core.js";
+import { LEGACY_ALIAS, CONTRACT_VERSION } from "./contract/registry.generated.js";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { VideoAssetService } from "./service.js";
+// REN-09：工具 schema 的模型/分辨率/比例枚举统一由能力注册表派生，
+// 使「注册表 → schema」单向可追溯；枚举内不再手工维护第二份清单。
+import { schemaEnums } from "./capability-registry.js";
 import { createGatewayRpcHandler } from "./gateway-rpc.js";
 import {
   SecurityManager,
   applySecurityHeaders,
   clearSessionCookie,
-  getClientIp,
   getRequestToken,
   readJsonBody,
   sendJson,
   setSessionCookie
 } from "./security.js";
+import { DEFAULT_BASE_PATH, ROUTE_SEGMENTS, createBasePathHelpers, resolveBasePath } from "./base-path.js";
+import { buildTrustedContext, toolContextToTrustedContext, withTrustedContext } from "./provider-gateway.js";
+import { DISPOSITION_ATTACHMENT, DISPOSITION_INLINE, descriptorFromResolved, sendMedia, sendStreamError } from "./protected-stream.js";
+import { createUploadHandlers } from "./upload-routes.js";
+import { GENERATION_ENTRY_POLICY, generationCoverageMatrix } from "./generation-policy.js";
+// REN-11: the durable generation queue needs a real provider adapter, otherwise every deployment
+// answers GENERATION_PROVIDER_UNAVAILABLE and "real generation" is only a claim. The adapter routes
+// every call through the REN-02 gateway; a call without a trusted caller context fails closed.
+import { createDreaminaCliJobAdapter } from "./dreamina-cli-job-adapter.js";
+import { assertContractProviderParity as assertContractProviderParityCore } from "./generation-registry.js";
+import {
+  ADAPTER_VERSION,
+  PLUGIN_ID,
+  assertSupportedHost,
+  beginRegistrationGeneration,
+  describeRegistrationLedger,
+  recordDisposal,
+  requireRegistration,
+  toStructuredError,
+  validateContractsCoverage,
+  validateGatewayScope,
+  validateRouteRegistration,
+  validateSecretInputDeclarations,
+  validateToolInput,
+  validateToolRegistration
+} from "./sdk-compat.js";
 
 let service;
+// Which tool surface the current registration generation exposed. Set by registerTools() so the manifest
+// coverage gate and the generation census judge the surface that was actually registered instead of
+// assuming the legacy one.
+let activeToolSurface = "legacy";
+function toolSurfaceInUse() {
+  return activeToolSurface === "contract" ? "contract" : "legacy";
+}
 let security;
+let compatReport;
+// REN-06: the streaming upload subsystem. The store is backed by the same SQLite handle as the rest of
+// the repository, so an upload session and the asset it becomes are committed together.
+let uploadStore = null;
+let uploadGate = null;
+let uploadHandlers = null;
+let pluginGeneration = 0;
+// REN-02: every external path derives from this one bundle (routes, cookie path, UI mount).
+let paths = createBasePathHelpers(DEFAULT_BASE_PATH);
+/**
+ * Trusted context for a tool call, derived from the HOST tool factory context.
+ *
+ * The host resolves function tools per run and calls the factory with an `OpenClawPluginToolContext`
+ * (`dist/tools-ch1s-pbT.mjs:124-125` -> `entry.factory(ctx)`; the type is declared in
+ * `dist/agent-harness-runtime-BwRgV0uy.d.ts:1966-2024`). That context carries the run's agent id,
+ * session and requester/owner bits, so it is the trusted identity source for this surface - never
+ * `params.actor_id`.
+ *
+ * `TOOL_SURFACE_CONTEXT` remains the fallback for a host that does not populate the context (or an
+ * older host that cannot accept a factory): the call is then explicitly UNATTRIBUTED and the policy
+ * decides through `security.generation.unattributedPolicy` instead of inventing an identity.
+ */
+const TOOL_SURFACE_CONTEXT = buildTrustedContext({ surface: "tool", trusted: false, source: "unattributed" });
+const registeredToolNames = new Set();
+/** Evidence about the tool-identity seam, captured once per registration (read-only diagnostics). */
+let toolSurfaceIdentity = null;
+// REN-09：schema 枚举由能力注册表派生（单次求值 + 冻结），工具定义处不再写第二份清单。
+const videoSchema = Object.freeze(schemaEnums({ kind: "video" }));
+const imageSchema = Object.freeze({ ...schemaEnums({ kind: "image" }), imageResolutionTypes: schemaEnums({ kind: "image" }).resolution_type });
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const MANIFEST_PATH = path.resolve(MODULE_DIR, "..", "openclaw.plugin.json");
 const UI_DIST_DIR = path.resolve(MODULE_DIR, "..", "ui-dist");
 const VIDEO_ASSETS_WIDGET_URI = "ui://widget/video-assets/canvas.html";
-const VIDEO_ASSETS_WORKBENCH_URL = "/__openclaw__/video-assets/workbench/";
+const VIDEO_ASSETS_WORKBENCH_URL = `${DEFAULT_BASE_PATH}/workbench/`;
 const UI_CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   "script-src 'self'",
@@ -36,39 +103,429 @@ const UI_CONTENT_SECURITY_POLICY = [
 ].join("; ");
 
 export default definePluginEntry({
-  id: "video-assets",
+  id: PLUGIN_ID,
   name: "视频资产库",
   description: "面向视频生产的项目资产库、制作画布与生成写回工具集。",
   register(api) {
-    service = new VideoAssetService({ pluginConfig: api.pluginConfig, logger: api.logger });
-    security = new SecurityManager({ pluginConfig: api.pluginConfig });
+    // Reload isolation: start a new registration generation and dispose state owned by the
+    // previous one (repository handle + plugin sessions) before anything new is created.
+    registeredToolNames.clear();
+    pluginGeneration = beginRegistrationGeneration(PLUGIN_ID, { registrationMode: api?.registrationMode ?? null });
+    disposePreviousPluginState("re-register", api.logger);
+
+    compatReport = assertSupportedHost(api);
+    api.logger.info?.(
+      `[video-assets] sdk-compat generation=${pluginGeneration} adapter=v${ADAPTER_VERSION} host=${compatReport.hostVersion.raw ?? "unknown"}(${compatReport.hostVersion.source}) overall=${compatReport.overall}`
+    );
+    for (const diagnostic of compatReport.degraded) {
+      api.logger.warn?.(
+        `[video-assets] degraded capability "${diagnostic.capability}": ${diagnostic.reason}; fallback: ${diagnostic.fallback}`
+      );
+    }
+
+    // REN-11: wire the real provider adapter for the generation queue. Default is the verified
+    // Dreamina CLI path; `generationJobs.providerAdapter: "none"` disables it explicitly (useful for
+    // a deployment that only runs local pipelines), and the download staging dir stays inside the
+    // repository root so provider output can never be written outside the managed area.
+    const generationJobsConfig = api.pluginConfig?.generationJobs ?? {};
+    const providerAdapterEnabled = generationJobsConfig.providerAdapter !== "none";
+    const providerDownloadRoot = path.join(
+      api.pluginConfig?.repositoryRoot && String(api.pluginConfig.repositoryRoot).trim()
+        ? String(api.pluginConfig.repositoryRoot).trim()
+        : path.join(process.env.USERPROFILE || process.env.HOME || process.cwd(), ".openclaw-video-assets"),
+      "asset-repo", "staging", "provider-downloads"
+    );
+    if (providerAdapterEnabled) fs.mkdirSync(providerDownloadRoot, { recursive: true });
+    service = new VideoAssetService({
+      pluginConfig: api.pluginConfig,
+      logger: api.logger
+    });
+    // REN-02: one base path drives routes, the session cookie Path and the workbench mount.
+    const basePath = resolveBasePath(api.pluginConfig ?? {});
+    paths = createBasePathHelpers(basePath);
+    if (basePath !== DEFAULT_BASE_PATH) {
+      api.logger.warn?.(
+        `[video-assets] basePath is ${basePath}; the prebuilt workbench bundle in ui-dist was compiled for ${DEFAULT_BASE_PATH}, so it must be rebuilt for this prefix (build: ui-src, see README).`
+      );
+    }
+    security = new SecurityManager({ pluginConfig: api.pluginConfig, basePath });
     service.init();
+    // The adapter is attached *after* init: it needs the live service (for the provider gateway,
+    // ingest and writeback), and the queue is the object that receives it.
+    if (providerAdapterEnabled) {
+      service.setGenerationJobAdapter(createDreaminaCliJobAdapter({
+        service,
+        executable: generationJobsConfig.dreaminaCliPath ?? null,
+        downloadRoot: providerDownloadRoot,
+        pollIntervalMs: Number.isFinite(Number(generationJobsConfig.pollIntervalMs)) ? Number(generationJobsConfig.pollIntervalMs) : 5000,
+        pollTimeoutMs: Number.isFinite(Number(generationJobsConfig.pollTimeoutMs)) ? Number(generationJobsConfig.pollTimeoutMs) : 300000,
+        logger: api.logger
+      }));
+    }
+    // REN-06: the service owns the upload store and gate, so the streaming route and the legacy staging
+    // helper are bounded by the SAME policy instance. Deriving them here instead would create a second
+    // copy of the limits, and a second copy is a bypass waiting to happen.
+    uploadStore = service.uploadStore;
+    uploadGate = service.uploadGate;
+    uploadHandlers = createUploadHandlers({
+      service,
+      security,
+      store: uploadStore,
+      gate: uploadGate,
+      policy: service.uploadPolicy
+    });
+    uploadStore.init().catch((error) => api.logger.warn?.(`[video-assets] upload store init failed: ${error?.message ?? error}`));
     if (!security.isConfigured()) {
       api.logger.warn?.("[video-assets] plugin auth is enabled but adminPasswordHash is not configured; HTTP login will reject requests.");
     }
 
-    api.registerService({
-      id: "video-assets-repository",
-      async start(ctx) {
-        ctx.logger.info?.(`[video-assets] repository ready: ${service.root}`);
-      },
-      async stop() {
-        service?.close();
-      }
-    });
-
+    registerServiceLifecycle(api);
     service.setCanvasWidgetRuntimeSupport(registerNativeWidgetResource(api));
+    toolSurfaceIdentity = describeToolFactorySupport(api);
+    if (toolSurfaceIdentity.supported) {
+      api.logger.info?.(
+        `[video-assets] tool-factory seam in use (signal=${toolSurfaceIdentity.signal}, registerTool arity=${toolSurfaceIdentity.register_tool_arity}, registrationMode=${toolSurfaceIdentity.registration_mode ?? "n/a"}); every tool call carries the host-supplied run context`
+      );
+    } else {
+      api.logger.warn?.(
+        `[video-assets] host does not expose the tool-factory seam (signal=${toolSurfaceIdentity.signal}, registerTool arity=${toolSurfaceIdentity.register_tool_arity}, registrationMode=${toolSurfaceIdentity.registration_mode ?? "n/a"}); tools are registered statically and the tool surface stays unattributed`
+      );
+    }
     registerTools(api);
     registerRpc(api);
+    registerConfigReloadPolicy(api);
     registerSecurityRoutes(api);
     registerUiApiRoute(api);
     registerSecureFileRoutes(api);
+    registerUploadRoute(api);
     registerUiRoutes(api);
+    assertManifestContracts(api);
+    assertGenerationPolicyCoverage(api, toolSurfaceInUse());
+    if (toolSurfaceInUse() === "contract") assertContractProviderParity(api);
   }
 });
 
+/**
+ * Release host-owned resources held by the previous registration generation.
+ * Without this, a host reload that reuses the plugin module instance would keep the old
+ * SQLite handle open and would keep accepting plugin session cookies minted before the reload.
+ */
+function disposePreviousPluginState(reason, logger) {
+  const hadState = Boolean(service || security);
+  let closedRepository = false;
+  let droppedSessions = null;
+  try {
+    if (service) {
+      service.close?.();
+      closedRepository = true;
+    }
+  } catch (error) {
+    logger?.warn?.(`[video-assets] previous repository close failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    if (security) droppedSessions = security.disposeSessions?.() ?? null;
+  } catch (error) {
+    logger?.warn?.(`[video-assets] previous session disposal failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (hadState) {
+    recordDisposal(PLUGIN_ID, reason);
+    // Operator-visible release marker. Reload correctness otherwise has no observable signal at all,
+    // which is exactly how a leaked repository handle or a surviving plugin session goes unnoticed.
+    logger?.info?.(
+      `[video-assets] released previous generation state (${reason}): repository_closed=${closedRepository} sessions_dropped=${droppedSessions?.sessions ?? 0} login_counters_dropped=${droppedSessions?.loginAttempts ?? 0}`
+    );
+  }
+  service = undefined;
+  security = undefined;
+  return hadState;
+}
+
+/**
+ * Service lifecycle registration.
+ *
+ * `reload.configPrefixes` is the host contract that lets a config edit under
+ * plugins.entries.video-assets.config restart just this service instead of the gateway
+ * (dist/config-reload-plan-U04DB8yk.mjs:228-231,255-261).
+ */
+function registerServiceLifecycle(api) {
+  requireRegistration("service", "video-assets-repository");
+  api.registerService({
+    id: "video-assets-repository",
+    reload: { configPrefixes: ["plugins.entries.video-assets.config"] },
+    async start(ctx) {
+      ctx.logger.info?.(`[video-assets] repository ready: ${service.root}`);
+    },
+    async stop() {
+      service?.close();
+    }
+  });
+}
+
+/**
+ * Declare how config changes affecting this plugin should be handled.
+ * The host rejects an entirely empty registration (dist/loader-runtime-load-*.mjs:3127-3130),
+ * so at least one prefix list must be non-empty.
+ */
+function registerConfigReloadPolicy(api) {
+  if (typeof api?.registerReload !== "function") return;
+  requireRegistration("reload-policy", "video-assets");
+  api.registerReload({
+    hotPrefixes: ["plugins.entries.video-assets.config"],
+    restartPrefixes: [],
+    noopPrefixes: []
+  });
+}
+
+/**
+ * Runtime gate: the manifest's contracts.tools is an admission list, not documentation —
+ * the host silently skips any tool that is not declared (dist/loader-runtime-load-*.mjs:3923-3937).
+ * Fail loudly at load instead.
+ */
+function assertManifestContracts(api) {
+  const manifest = readOwnManifest();
+  if (!manifest) {
+    api.logger.warn?.("[video-assets] openclaw.plugin.json unreadable; contracts.tools coverage check skipped");
+    return;
+  }
+  const coverage = validateContractsCoverage({
+    declaredNames: manifest.contracts?.tools ?? [],
+    registeredNames: [...registeredToolNames]
+  });
+  if (!coverage.ok) {
+    api.logger.error?.(`[video-assets] ${coverage.error.message}`);
+    throw coverage.error;
+  }
+  const secretPaths = manifest.configContracts?.secretInputs?.paths ?? [];
+  const secretCheck = validateSecretInputDeclarations({ configSchema: manifest.configSchema, declaredPaths: secretPaths });
+  if (!secretCheck.ok) {
+    api.logger.error?.(
+      `[video-assets] SecretRef metadata drift: ${secretCheck.problems.join("; ")}. SecretRef resolution may silently stop working; fix manifest configContracts/SecretRef schema together.`
+    );
+    compatReport = { ...compatReport, secretInputDeclaration: { ok: false, problems: secretCheck.problems } };
+  } else if (compatReport) {
+    compatReport = { ...compatReport, secretInputDeclaration: { ok: true, declared: secretCheck.declared } };
+  }
+  api.logger.info?.(`[video-assets] contracts.tools coverage ok: ${coverage.registered} tools`);
+}
+
+/**
+ * REN-02: fail loudly when a registered tool or gateway method is not declared in the authoritative
+ * census (`src/generation-registry.js`). The census replaced the earlier naming heuristic, which
+ * only WARNED and therefore could not stop a new paid entry point whose name the regex missed
+ * (review round 2, issue 4). Registration now stops on: an unclassified registered name, a
+ * provider operation pointing at an unknown entry, an entry with no provider or no entry point, an
+ * ambiguous name, or a mismatch between the census and the entry tables.
+ */
+function assertGenerationPolicyCoverage(api, surface = "legacy") {
+  const matrix = generationCoverageMatrix({
+    toolNames: [...registeredToolNames],
+    rpcNames: Object.keys(allRpc()),
+    surface
+  });
+  const fatal = [
+    ...matrix.unclassified_names.map((name) => `unclassified registered name: ${name}`),
+    ...matrix.entries_without_provider.map((entry) => `entry without provider: ${entry}`),
+    ...matrix.ambiguous_names.map((item) => `name maps to several entries: ${item.name} -> ${item.entries.join(", ")}`),
+    ...matrix.cross_check.map((item) => `census/entry mismatch: ${item}`)
+  ];
+  if (fatal.length > 0) {
+    const error = new Error(`generation policy coverage is incomplete or ambiguous: ${fatal.join("; ")}`);
+    api.logger.error?.(`[video-assets] ${error.message}`);
+    throw error;
+  }
+  api.logger.info?.(
+    `[video-assets] generation policy coverage ok (${surface} surface): ${matrix.entries.length} entries / ${matrix.provider_operations.length} provider operations (${matrix.classified_tools} tools, ${matrix.classified_rpc} rpc classified)`
+  );
+}
+
+/**
+ * REN-04: paid-path parity for the reduced surface.
+ *
+ * The contract census table is hand-written, so it could drift from the adapter. This derives the reachable
+ * paid entry points from the adapter's own dispatch table and requires them to match the legacy provider
+ * names exactly: merging seven generation tools into `video_generate` must not lose a paid path nor invent
+ * one. Registration fails loudly on a mismatch, so the reduced surface cannot ship with a paid path
+ * unaccounted for.
+ */
+function assertContractProviderParity(api) {
+  const parity = assertContractProviderParityCore({ adapterTargets: allAdapterTargets() });
+  if (!parity.ok) {
+    const error = new Error(`contract paid-path parity failed: ${parity.problems.join("; ")}`);
+    api.logger.error?.(`[video-assets] ${error.message}`);
+    throw error;
+  }
+  api.logger.info?.(
+    `[video-assets] contract paid-path parity ok: ${parity.reachable_provider_names.length} paid tool name(s) reachable across ${parity.reachable_entries.length} generation entry/entries`
+  );
+}
+
+/**
+ * Security diagnostics surfaced through the existing read-only dashboard RPC (no new route or RPC
+ * method, so the REN-01 surface counts stay frozen). Contains no tokens, hashes or credentials.
+ */
+function securityDiagnostics() {
+  const originPolicy = security?.originPolicy;
+  return {
+    base_path: paths.basePath,
+    auth: security?.describe?.() ?? null,
+    origin_policy_summary: originPolicy
+      ? {
+          mode: originPolicy.settings.mode,
+          declared_origins: originPolicy.configuredOrigins().origins,
+          declared_origin_source: originPolicy.configuredOrigins().source,
+          derive_from_host: originPolicy.settings.deriveOriginFromHost,
+          note: "declared_origins is the fixed allowlist; a request Host never adds to it (src/request-security.js declaredOrigins)"
+        }
+      : null,
+    tool_surface_identity: toolSurfaceIdentity,
+    generation: service?.providerGatewayStats?.() ?? null,
+    recent_denials: (service?.providerGatewayDenials?.() ?? []).slice(-5).map((record) => ({
+      at: record.at,
+      entry: record.entry,
+      surface: record.surface,
+      code: record.code,
+      actor_id: record.attribution?.actor_id ?? "unattributed",
+      actor_source: record.attribution?.source ?? "unattributed"
+    }))
+  };
+}
+
+function readOwnManifest() {
+  try {
+    return JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** Exposed for tests and diagnostics: last host compatibility report. */
+export function getCompatReport() {
+  return compatReport ?? null;
+}
+
+/** Exposed for tests and diagnostics: registration ledger snapshot (generations, counts). */
+export function getRegistrationLedgerSnapshot() {
+  return describeRegistrationLedger(PLUGIN_ID);
+}
+
+/** Exposed for tests and diagnostics: the live service instance of this registration generation.
+ *  Read-only handle so an out-of-process check can observe the provider gateway (spy counting) without
+ *  needing to re-create the plugin's service or touch any production configuration. */
+export function getPluginService() {
+  return service ?? null;
+}
+
+/** Exposed for tests and diagnostics: does this host expose the tool-factory identity seam? */
+export function getToolSurfaceIdentity() {
+  return toolSurfaceIdentity ?? null;
+}
+
+function registerToolDefinition(api, definition) {
+  const check = validateToolRegistration({ name: definition.name, tool: definition, seenNames: registeredToolNames });
+  if (!check.ok) {
+    api.logger.error?.(`[video-assets] ${check.error.message}`);
+    throw check.error;
+  }
+  requireRegistration("tool", definition.name);
+  registeredToolNames.add(definition.name);
+  // REN-02: register a FACTORY so the host supplies the trusted run context
+  // (`OpenClawPluginToolContext`: agentId / sessionKey / sessionId / requesterSenderId /
+  // senderIsOwner). The host resolves factories per run (`dist/tools-ch1s-pbT.mjs:124-125`), so the
+  // identity attached to `execute` comes from the runtime, not from the model's arguments.
+  if (supportsToolFactory(api)) {
+    api.registerTool(
+      (toolContext) => ({
+        ...definition,
+        execute: (toolCallId, args, signal, onUpdate) => definition.execute(toolCallId, args, signal, onUpdate, toolContext)
+      }),
+      { name: definition.name }
+    );
+    return;
+  }
+  api.registerTool(definition);
+}
+
+/**
+ * Does this host accept a tool factory?
+ *
+ * The host API is `registerTool: (tool: AnyAgentTool | OpenClawPluginToolFactory, opts?)
+ * => void` (`dist/agent-harness-runtime-BwRgV0uy.d.ts:14339`) and the loader resolves it with
+ * `const factory = typeof tool === "function" ? tool : (_ctx) => tool`
+ * (`dist/loader-runtime-load-BgaHcThS.mjs:3929`). Two runtime signals are checked here: the
+ * function exists, and it accepts the options argument that a factory needs in order to supply its
+ * name (for a function tool the host takes names from `opts.name`/`opts.names`, line 3927-3930).
+ * When the signal is absent the plain tool is registered and the tool surface stays explicitly
+ * unattributed - the degradation is logged, never silent. The end-to-end proof that the host really
+ * populates the factory context is the isolated daemon scenario in `host-smoke/` (S15/S16).
+ */
+function supportsToolFactory(api) {
+  if (typeof api?.registerTool !== "function") return false;
+  // (tool, opts) hosts: unambiguous.
+  if (api.registerTool.length >= 2) return true;
+  // MEASURED 2026-09-21 in the isolated lane against this host: `api.registerTool.length === 0`
+  // because the host exposes the registrar through a rest-args adapter, even though its loader DOES
+  // resolve function tools per run
+  // (`dist/loader-runtime-load-BgaHcThS.mjs:3929` -> `const factory = typeof tool === "function" ?
+  // tool : (_ctx) => tool`, and the factory is invoked per run in `dist/tools-ch1s-pbT.mjs:124`).
+  // The bundled browser plugin registers the factory form with no options argument at all.
+  // Arity is therefore NOT a capability signal: requiring `>= 2` silently downgraded every real tool
+  // call to `unattributed` (observed in run 20260921-g5-tool-identity-v4).
+  //
+  // The signal used instead is the modern plugin API surface that ships with that loader:
+  // `registrationMode` (the api-builder that binds the factory-accepting registrar always sets it) or
+  // the `registerToolMetadata` registrar. A host exposing neither keeps the static registration path.
+  return typeof api?.registrationMode === "string" || typeof api?.registerToolMetadata === "function";
+}
+
+/** Records WHICH signal decided support, so the evidence names the reason and not just the verdict. */
+function toolFactorySupportSignal(api, arity) {
+  if (typeof api?.registerTool !== "function") return "no-registerTool";
+  if (arity >= 2) return "registerTool-arity";
+  if (typeof api?.registrationMode === "string") return "registrationMode";
+  if (typeof api?.registerToolMetadata === "function") return "registerToolMetadata";
+  return "none";
+}
+
+function describeToolFactorySupport(api) {
+  const arity = typeof api?.registerTool === "function" ? api.registerTool.length : null;
+  return {
+    supported: supportsToolFactory(api),
+    signal: toolFactorySupportSignal(api, arity),
+    register_tool_arity: arity,
+    registration_mode: typeof api?.registrationMode === "string" ? api.registrationMode : null,
+    register_tool_metadata: typeof api?.registerToolMetadata === "function",
+    evidence: "dist/agent-harness-runtime-BwRgV0uy.d.ts:14339 + dist/loader-runtime-load-BgaHcThS.mjs:3927-3930 (factory resolution) + dist/tools-ch1s-pbT.mjs:124 (per-run invocation); arity is measured, not assumed"
+  };
+}
+
+/**
+ * Build the trusted context for one tool call.
+ *
+ * The factory context is the only identity source on this surface. If the host did not populate it
+ * (older host, or a call path without a run context), the call is reported as unattributed instead of
+ * borrowing `params.actor_id`.
+ */
+function trustedContextForToolCall(toolContext) {
+  if (!toolContext || typeof toolContext !== "object") return TOOL_SURFACE_CONTEXT;
+  const hasIdentity = (typeof toolContext.agentId === "string" && toolContext.agentId.trim() !== "") ||
+    (typeof toolContext.requesterSenderId === "string" && toolContext.requesterSenderId.trim() !== "");
+  if (!hasIdentity) return TOOL_SURFACE_CONTEXT;
+  return toolContextToTrustedContext(toolContext, { surface: "tool" });
+}
+
+function registerHttpRouteChecked(api, params) {
+  const check = validateRouteRegistration({ path: params.path, auth: params.auth, match: params.match });
+  if (!check.ok) {
+    api.logger.error?.(`[video-assets] ${check.error.message}`);
+    throw check.error;
+  }
+  requireRegistration("http-route", `${params.match ?? "exact"} ${params.path}`);
+  api.registerHttpRoute(params);
+}
+
 function registerNativeWidgetResource(api) {
   const attemptedApis = [];
+  requireRegistration("widget-resource", "canvas-widget");
   const diagnostics = [];
   const html = readNativeWidgetHtml();
   const candidates = [
@@ -192,6 +649,8 @@ const TOOL_DISPLAY_NAMES = {
   video_canvas_kie_suno_audio_generate: "执行画布 KIE Suno 生成",
   video_canvas_dreamina_cli_plan: "生成即梦命令计划",
   video_canvas_dreamina_cli_generate_video: "执行即梦视频生成",
+  video_canvas_dreamina_cli_generate_image: "执行即梦图像生成",
+  video_canvas_dreamina_cli_upscale_image: "执行即梦图像放大",
   video_canvas_lint: "检查画布生产就绪度"
 };
 
@@ -253,7 +712,7 @@ const TOOL_DESCRIPTIONS_ZH = {
   video_canvas_insert_generated_asset: "导入生成文件，加入项目，并写回到生成槽旁边。",
   video_canvas_fill_generation_slot: "按先入库再写回的默认策略，用生成文件填入画布生成槽。",
   video_audio_doubao_plan: "构建豆包音频生成 1.0 标准请求包，不调用模型，不消耗成本。",
-  video_audio_doubao_generate: "执行豆包音频生成，平台审核通过后自动以 cleared 状态入库。",
+  video_audio_doubao_generate: "执行豆包音频生成，平台审核通过后入库（授权默认 unknown）",
   video_canvas_doubao_audio_plan: "从画布音频生成槽构建豆包音频请求包，不调用模型。",
   video_canvas_doubao_audio_generate: "从画布音频生成槽执行豆包音频生成，入库后写回画布。",
   video_audio_kie_suno_plan: "构建 KIE Suno API 音乐/歌曲生成请求包，不提交任务。",
@@ -262,6 +721,8 @@ const TOOL_DESCRIPTIONS_ZH = {
   video_canvas_kie_suno_audio_generate: "从画布音频生成槽执行 KIE Suno 生成，入库后写回画布。",
   video_canvas_dreamina_cli_plan: "从画布交接包构建即梦命令执行计划，不消耗积分。",
   video_canvas_dreamina_cli_generate_video: "依据画布交接包执行即梦视频生成，并严格校验视频模型参数。",
+  video_canvas_dreamina_cli_generate_image: "依据画布交接包执行即梦图像生成（含 Seedream 5.0Pro），并严格校验图像模型参数。",
+  video_canvas_dreamina_cli_upscale_image: "对指定素材版本执行即梦图像放大（image_upscale，2k/4k/8k），可选写回画布。",
   video_canvas_lint: "检查画布绑定缺口和生产就绪度警告。"
 };
 
@@ -436,7 +897,60 @@ function kieSunoToolSchema({ includeCanvas }) {
 }
 
 function registerTools(api) {
-  api.registerTool(tool("video_asset_ingest", "Import a local file into the video asset repository.", {
+  // ----------------------------------------------------------------------------------------------
+  // REN-04: reduced contract surface.
+  //
+  // When the tool surface is configured as "contract", the plugin registers the 16 typed domain
+  // operations from src/contract/contract-surface-core.js instead of the 69 original registrations below.
+  // The registration runs against THIS same `service` instance, so the reduced surface shares the
+  // repository handle, the security manager, the HTTP routes, the RPC registration and the identity /
+  // generation-registry logic that live inside the service methods - it is not a parallel stub registry.
+  //
+  // Default is "legacy", so the REN-02 security candidate keeps its exact original behaviour unless the
+  // contract surface is explicitly selected, and the legacy registrations below stay the rollback path.
+  // ----------------------------------------------------------------------------------------------
+  // The surface DEFAULTS to whatever the packaged manifest declares. openclaw.plugin.json is a runtime
+  // admission list whose path is fixed per package (src/index.js:61), so a package ships ONE surface; and
+  // assertManifestContracts() throws on any registered/declared disagreement (measured: selecting the
+  // contract surface against the 69-tool manifest produced "0 registered-but-undeclared, 69
+  // declared-but-unregistered"). Deriving the default from the manifest therefore removes the desync class
+  // entirely, while an explicit toolSurface still can force a surface - and then fails loudly rather than
+  // silently exposing the wrong tool list.
+  const declaredToolNames = readOwnManifest()?.contracts?.tools ?? [];
+  const manifestWantsContract =
+    declaredToolNames.length === CONTRACT_TOOL_NAMES.length &&
+    CONTRACT_TOOL_NAMES.every((n) => declaredToolNames.includes(n));
+  const configuredSurface = api.pluginConfig?.toolSurface ?? (manifestWantsContract ? "contract" : "legacy");
+  activeToolSurface = configuredSurface;
+
+  if (configuredSurface === "contract") {
+    // Register through the SAME path the legacy tools use: `tool()` builds the definition (input validation,
+    // trusted-context plumbing, structured failure envelope) and `registerToolDefinition` performs the
+    // admission checks, records the name in registeredToolNames (which the manifest coverage check and the
+    // generation census both read) and registers a FACTORY so the host supplies the trusted run context.
+    //
+    // The first attempt registered raw `{ handler }` objects straight onto api.registerTool, which skipped
+    // all of that: the probe showed 16 registrations with execute_count=0 and factory_count=0, the name set
+    // stayed empty, and the trusted identity was never carried.
+    const specs = buildOperationSpecs(service);
+    for (const spec of specs) {
+      const definition = tool(spec.name, spec.description, spec.properties, spec.handler, spec.required);
+      // catalogMode is declared on the tool definition, not passed sideways, so the resident operations
+      // stay directly visible while the on-demand ones remain catalog-discoverable.
+      registerToolDefinition(api, spec.resident ? { ...definition, catalogMode: "direct-only" } : definition);
+    }
+    api.logger.info?.(
+      `[video-assets] toolSurface=contract: ${specs.length} operations registered through registerToolDefinition; ${Object.keys(LEGACY_ALIAS).length} legacy tool name(s) remain callable through the migration adapter (contract ${CONTRACT_VERSION})`
+    );
+    return;
+  }
+  if (configuredSurface !== "legacy") {
+    // Unknown value: refuse to guess which surface to expose. Registering the wrong surface silently would
+    // be worse than failing loudly, because the tool list is the model's whole view of this plugin.
+    api.logger.error?.(`[video-assets] unknown toolSurface "${configuredSurface}"; expected "legacy" or "contract". Registering no tools.`);
+    return;
+  }
+  registerToolDefinition(api, tool("video_asset_ingest", "Import a local file into the video asset repository.", {
     file_path: { type: "string" },
     kind: { type: "string", enum: ["raw", "working"] },
     title: { type: "string", minLength: 1, maxLength: 512 },
@@ -453,17 +967,17 @@ function registerTools(api) {
     }
   }, (args) => service.ingestAsset(args)));
 
-  api.registerTool(tool("video_asset_search", "Search video assets by text and basic filters.", {
+  registerToolDefinition(api, tool("video_asset_search", "Search video assets by text and basic filters.", {
     query: { type: "string" },
     limit: { type: "integer", minimum: 1, maximum: 100 },
     offset: { type: "integer", minimum: 0, maximum: 100000 }
   }, (args) => service.searchAssets(args)));
 
-  api.registerTool(tool("video_asset_get", "Get an asset with versions and branches.", {
+  registerToolDefinition(api, tool("video_asset_get", "Get an asset with versions and branches.", {
     asset_id: { type: "string" }
   }, (args) => service.getAsset(args)));
 
-  api.registerTool(tool("video_asset_update_metadata", "Update asset title, description, and tags without changing media versions.", {
+  registerToolDefinition(api, tool("video_asset_update_metadata", "Update asset title, description, and tags without changing media versions.", {
     asset_id: { type: "string" },
     title: { type: "string", minLength: 1, maxLength: 512 },
     description: { type: "string", maxLength: 65536 },
@@ -471,7 +985,7 @@ function registerTools(api) {
     notes: { type: "string" }
   }, (args) => service.updateAssetMetadata(args), ["asset_id"]));
 
-  api.registerTool(tool("video_asset_update_rights", "Update asset license/risk status and append source rights evidence.", {
+  registerToolDefinition(api, tool("video_asset_update_rights", "Update asset license/risk status and append source rights evidence.", {
     asset_id: { type: "string" },
     license_status: { type: "string", enum: ["unknown", "cleared", "restricted", "rejected"] },
     risk_level: { type: "string", enum: ["unknown", "low", "medium", "high"] },
@@ -491,7 +1005,7 @@ function registerTools(api) {
     }
   }, (args) => service.updateAssetRights(args)));
 
-  api.registerTool(tool("video_asset_create_version", "Create a new asset version. change_items is required.", {
+  registerToolDefinition(api, tool("video_asset_create_version", "Create a new asset version. change_items is required.", {
     asset_id: { type: "string" },
     file_path: { type: "string" },
     change_summary: { type: "string" },
@@ -515,14 +1029,14 @@ function registerTools(api) {
     set_as_default: { type: "boolean" }
   }, (args) => service.createVersion(args)));
 
-  api.registerTool(tool("video_asset_create_branch", "Create a branch from an asset version.", {
+  registerToolDefinition(api, tool("video_asset_create_branch", "Create a branch from an asset version.", {
     asset_id: { type: "string" },
     base_version_id: { type: "string" },
     name: { type: "string" },
     description: { type: "string" }
   }, (args) => service.createBranch(args)));
 
-  api.registerTool(tool("video_asset_save_copy", "Save a managed copy from an existing asset version.", {
+  registerToolDefinition(api, tool("video_asset_save_copy", "Save a managed copy from an existing asset version.", {
     source_asset_id: { type: "string" },
     source_version_id: { type: "string" },
     copy_type: { type: "string", enum: ["snapshot_copy", "working_copy", "project_copy", "export_copy"] },
@@ -531,11 +1045,11 @@ function registerTools(api) {
     reason: { type: "string" }
   }, (args) => service.saveCopy(args)));
 
-  api.registerTool(tool("video_asset_lineage", "Inspect asset lineage: branches, versions, incoming and outgoing relations.", {
+  registerToolDefinition(api, tool("video_asset_lineage", "Inspect asset lineage: branches, versions, incoming and outgoing relations.", {
     asset_id: { type: "string" }
   }, (args) => service.lineage(args)));
 
-  api.registerTool(tool("video_asset_register_derived_file", "Register a thumbnail, proxy, transcode, subtitle, or other derived file for an asset version.", {
+  registerToolDefinition(api, tool("video_asset_register_derived_file", "Register a thumbnail, proxy, transcode, subtitle, or other derived file for an asset version.", {
     asset_id: { type: "string" },
     asset_version_id: { type: "string" },
     file_path: { type: "string" },
@@ -544,7 +1058,7 @@ function registerTools(api) {
     metadata: { type: "object", additionalProperties: true }
   }, (args) => service.registerDerivedFile(args)));
 
-  api.registerTool(tool("video_asset_generate_derived_file", "Generate a thumbnail or proxy from an asset version and register it as a derived file.", {
+  registerToolDefinition(api, tool("video_asset_generate_derived_file", "Generate a thumbnail or proxy from an asset version and register it as a derived file.", {
     asset_id: { type: "string" },
     asset_version_id: { type: "string" },
     derivative_type: { type: "string", enum: ["thumbnail", "proxy", "transcode"] },
@@ -557,18 +1071,18 @@ function registerTools(api) {
     metadata: { type: "object", additionalProperties: true }
   }, (args) => service.generateDerivedFile(args)));
 
-  api.registerTool(tool("video_asset_derived_files", "List registered derived files for an asset or asset version.", {
+  registerToolDefinition(api, tool("video_asset_derived_files", "List registered derived files for an asset or asset version.", {
     asset_id: { type: "string" },
     asset_version_id: { type: "string" },
     derivative_type: { type: "string", enum: ["thumbnail", "proxy", "transcode", "audio_proxy", "subtitle", "waveform", "contact_sheet", "metadata", "other"] },
     include_inactive: { type: "boolean" }
   }, (args) => service.listDerivedFiles(args)));
 
-  api.registerTool(tool("video_asset_integrity_scan", "Scan repository metadata, source objects, derived files, and project refs for integrity issues.", {
+  registerToolDefinition(api, tool("video_asset_integrity_scan", "Scan repository metadata, source objects, derived files, and project refs for integrity issues.", {
     deep: { type: "boolean" }
   }, (args) => service.integrityScan(args)));
 
-  api.registerTool(tool("video_asset_classify", "Classify an asset or asset version with controlled production taxonomy.", {
+  registerToolDefinition(api, tool("video_asset_classify", "Classify an asset or asset version with controlled production taxonomy.", {
     asset_id: { type: "string" },
     asset_version_id: { type: "string" },
     domain: { type: "string", enum: ["character", "scene", "costume", "prop", "audio", "reference", "prompt", "document", "delivery", "other"] },
@@ -578,17 +1092,17 @@ function registerTools(api) {
     source: { type: "string", enum: ["manual", "agent", "import", "migration"] }
   }, (args) => service.classifyAsset(args)));
 
-  api.registerTool(tool("video_asset_get_classification", "Get asset taxonomy classifications and entity links.", {
+  registerToolDefinition(api, tool("video_asset_get_classification", "Get asset taxonomy classifications and entity links.", {
     asset_id: { type: "string" },
     asset_version_id: { type: "string" }
   }, (args) => service.getAssetClassification(args)));
 
-  api.registerTool(tool("video_asset_taxonomy_report", "Scan the asset library for missing taxonomy, entity links, and key annotations.", {
+  registerToolDefinition(api, tool("video_asset_taxonomy_report", "Scan the asset library for missing taxonomy, entity links, and key annotations.", {
     include_archived: { type: "boolean" },
     limit: { type: "number" }
   }, (args) => service.assetTaxonomyReport(args)));
 
-  api.registerTool(tool("video_entity_create", "Create a production entity such as a character, scene, costume, or prop.", {
+  registerToolDefinition(api, tool("video_entity_create", "Create a production entity such as a character, scene, costume, or prop.", {
     entity_key: { type: "string" },
     entity_type: { type: "string", enum: ["character", "scene", "costume", "prop", "organization", "style", "other"] },
     canonical_name: { type: "string" },
@@ -598,7 +1112,7 @@ function registerTools(api) {
     status: { type: "string", enum: ["draft", "active", "locked", "archived"] }
   }, (args) => service.createEntity(args)));
 
-  api.registerTool(tool("video_entity_search", "Search production entities by key, name, alias, type, or project.", {
+  registerToolDefinition(api, tool("video_entity_search", "Search production entities by key, name, alias, type, or project.", {
     query: { type: "string" },
     entity_type: { type: "string" },
     project_id: { type: "string" },
@@ -606,7 +1120,7 @@ function registerTools(api) {
     offset: { type: "integer", minimum: 0, maximum: 100000 }
   }, (args) => service.searchEntities(args)));
 
-  api.registerTool(tool("video_entity_link_asset", "Link an asset or asset version to a production entity.", {
+  registerToolDefinition(api, tool("video_entity_link_asset", "Link an asset or asset version to a production entity.", {
     asset_id: { type: "string" },
     asset_version_id: { type: "string" },
     entity_id: { type: "string" },
@@ -616,7 +1130,7 @@ function registerTools(api) {
     notes: { type: "string" }
   }, (args) => service.linkEntityAsset(args)));
 
-  api.registerTool(tool("video_asset_annotate", "Add a structured annotation to an asset, asset version, entity, or project reference.", {
+  registerToolDefinition(api, tool("video_asset_annotate", "Add a structured annotation to an asset, asset version, entity, or project reference.", {
     target_type: { type: "string", enum: ["asset", "asset_version", "entity", "project_ref"] },
     target_id: { type: "string" },
     annotation_type: { type: "string", enum: ["character_profile", "scene_concept", "costume_spec", "prop_function", "visual_continuity", "source_rights", "production_note", "review_note", "prompt_note", "other"] },
@@ -626,13 +1140,13 @@ function registerTools(api) {
     visibility: { type: "string", enum: ["internal", "project", "public_summary"] }
   }, (args) => service.annotateAsset(args)));
 
-  api.registerTool(tool("video_asset_annotations", "List annotations for an asset, asset version, entity, or project reference.", {
+  registerToolDefinition(api, tool("video_asset_annotations", "List annotations for an asset, asset version, entity, or project reference.", {
     target_type: { type: "string", enum: ["asset", "asset_version", "entity", "project_ref"] },
     target_id: { type: "string" },
     include_archived: { type: "boolean" }
   }, (args) => service.listAnnotations(args)));
 
-  api.registerTool(tool("video_asset_update_annotation", "Update an existing annotation or change its status.", {
+  registerToolDefinition(api, tool("video_asset_update_annotation", "Update an existing annotation or change its status.", {
     annotation_id: { type: "string" },
     title: { type: "string" },
     body: { type: "string" },
@@ -641,7 +1155,7 @@ function registerTools(api) {
     visibility: { type: "string", enum: ["internal", "project", "public_summary"] }
   }, (args) => service.updateAnnotation(args)));
 
-  api.registerTool(tool("video_project_create", "Create a video project record.", {
+  registerToolDefinition(api, tool("video_project_create", "Create a video project record.", {
     title: { type: "string" },
     description: { type: "string" },
     target_platforms: { type: "array", items: { type: "string" } },
@@ -650,7 +1164,7 @@ function registerTools(api) {
     fps: { type: "number" }
   }, (args) => service.createProject(args)));
 
-  api.registerTool(tool("video_project_update_spec", "Update project output targets used by canvas generation handoff.", {
+  registerToolDefinition(api, tool("video_project_update_spec", "Update project output targets used by canvas generation handoff.", {
     project_id: { type: "string" },
     target_platforms: { type: "array", items: { type: "string" } },
     aspect_ratio: { type: "string" },
@@ -658,7 +1172,7 @@ function registerTools(api) {
     fps: { type: "number" }
   }, (args) => service.updateProjectSpec(args)));
 
-  api.registerTool(tool("video_project_add_asset_ref", "Add an asset version reference to a project.", {
+  registerToolDefinition(api, tool("video_project_add_asset_ref", "Add an asset version reference to a project.", {
     project_id: { type: "string" },
     asset_id: { type: "string" },
     asset_version_id: { type: "string" },
@@ -669,7 +1183,7 @@ function registerTools(api) {
     notes: { type: "string" }
   }, (args) => service.addProjectRef(args), ["project_id", "asset_id"]));
 
-  api.registerTool(tool("video_project_update_asset_ref", "Update an existing project asset reference.", {
+  registerToolDefinition(api, tool("video_project_update_asset_ref", "Update an existing project asset reference.", {
     reference_id: { type: "string" },
     asset_id: { type: "string" },
     asset_version_id: { type: "string" },
@@ -680,38 +1194,38 @@ function registerTools(api) {
     notes: { type: "string" }
   }, (args) => service.updateProjectRef(args), ["reference_id"]));
 
-  api.registerTool(tool("video_project_remove_asset_ref", "Soft-remove a project asset reference.", {
+  registerToolDefinition(api, tool("video_project_remove_asset_ref", "Soft-remove a project asset reference.", {
     reference_id: { type: "string" }
   }, (args) => service.removeProjectRef(args)));
 
-  api.registerTool(tool("video_project_refs", "List project asset references.", {
+  registerToolDefinition(api, tool("video_project_refs", "List project asset references.", {
     project_id: { type: "string" }
   }, (args) => service.listProjectRefs(args)));
 
-  api.registerTool(tool("video_project_asset_report", "Generate a project asset dependency and risk report.", {
+  registerToolDefinition(api, tool("video_project_asset_report", "Generate a project asset dependency and risk report.", {
     project_id: { type: "string" }
   }, (args) => service.projectReport(args)));
 
-  api.registerTool(tool("video_project_continuity_report", "Check project taxonomy, entity-link, and annotation continuity risks.", {
+  registerToolDefinition(api, tool("video_project_continuity_report", "Check project taxonomy, entity-link, and annotation continuity risks.", {
     project_id: { type: "string" },
     stage: { type: "string", enum: ["research", "production", "review", "delivery"] }
   }, (args) => service.projectContinuityReport(args)));
 
-  api.registerTool(tool("video_canvas_create", "Create a project infinite canvas.", {
+  registerToolDefinition(api, tool("video_canvas_create", "Create a project infinite canvas.", {
     project_id: { type: "string" },
     title: { type: "string" },
     viewport: { type: "object", additionalProperties: true },
     document: { type: "object", additionalProperties: true }
   }, (args) => service.createCanvas(args)));
 
-  api.registerTool(tool("video_canvas_search", "Search project canvases.", {
+  registerToolDefinition(api, tool("video_canvas_search", "Search project canvases.", {
     project_id: { type: "string" },
     query: { type: "string" },
     limit: { type: "integer", minimum: 1, maximum: 200 },
     offset: { type: "integer", minimum: 0, maximum: 100000 }
   }, (args) => service.searchCanvases(args)));
 
-  api.registerTool(tool("video_canvas_apply_production_template", "Apply a production pilot canvas template with stage sections, project refs, entities, and generation slots.", {
+  registerToolDefinition(api, tool("video_canvas_apply_production_template", "Apply a production pilot canvas template with stage sections, project refs, entities, and generation slots.", {
     canvas_id: { type: "string" },
     project_id: { type: "string" },
     title: { type: "string" },
@@ -720,11 +1234,11 @@ function registerTools(api) {
     actor_type: { type: "string" }
   }, (args) => service.applyProductionCanvasTemplate(args)));
 
-  api.registerTool(tool("video_canvas_get", "Get an infinite canvas with shapes and edges.", {
+  registerToolDefinition(api, tool("video_canvas_get", "Get an infinite canvas with shapes and edges.", {
     canvas_id: { type: "string" }
   }, (args) => service.getCanvas(args)));
 
-  api.registerTool(tool("video_canvas_save_snapshot", "Save a canvas viewport/document snapshot.", {
+  registerToolDefinition(api, tool("video_canvas_save_snapshot", "Save a canvas viewport/document snapshot.", {
     canvas_id: { type: "string" },
     viewport: { type: "object", additionalProperties: true },
     document: { type: "object", additionalProperties: true },
@@ -738,7 +1252,7 @@ function registerTools(api) {
     state: { type: "object", additionalProperties: true }
   }, (args) => service.saveCanvasSnapshot(args), ["canvas_id"]));
 
-  api.registerTool(tool("video_canvas_upsert_shape", "Create or update a canvas card/shape without modifying the underlying asset.", {
+  registerToolDefinition(api, tool("video_canvas_upsert_shape", "Create or update a canvas card/shape without modifying the underlying asset.", {
     canvas_id: { type: "string" },
     shape_id: { type: "string" },
     shape_type: { type: "string", enum: ["project_card", "asset_card", "entity_card", "reference_card", "note", "section"] },
@@ -754,7 +1268,7 @@ function registerTools(api) {
     props: { type: "object", additionalProperties: true }
   }, (args) => service.upsertCanvasShape(args)));
 
-  api.registerTool(tool("video_canvas_create_generation_slot", "Create a production generation slot with target size, ratio, duration, and required references.", {
+  registerToolDefinition(api, tool("video_canvas_create_generation_slot", "Create a production generation slot with target size, ratio, duration, and required references.", {
     canvas_id: { type: "string" },
     slot: { type: "string", enum: ["main_reference", "character_reference", "scene_reference", "motion_reference", "style_reference", "video_clip", "audio", "subtitle", "project_config", "draft_output"] },
     generation_type: { type: "string", enum: ["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"] },
@@ -776,7 +1290,7 @@ function registerTools(api) {
     height: { type: "number" }
   }, (args) => service.createGenerationSlot(args), ["canvas_id"]));
 
-  api.registerTool(tool("video_canvas_update_generation_slot", "Update a production generation slot target spec or workflow state.", {
+  registerToolDefinition(api, tool("video_canvas_update_generation_slot", "Update a production generation slot target spec or workflow state.", {
     shape_id: { type: "string" },
     slot: { type: "string", enum: ["main_reference", "character_reference", "scene_reference", "motion_reference", "style_reference", "video_clip", "audio", "subtitle", "project_config", "draft_output"] },
     generation_type: { type: "string", enum: ["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"] },
@@ -798,11 +1312,11 @@ function registerTools(api) {
     height: { type: "number" }
   }, (args) => service.updateGenerationSlot(args), ["shape_id"]));
 
-  api.registerTool(tool("video_canvas_delete_shape", "Remove a card from a canvas without deleting repository assets.", {
+  registerToolDefinition(api, tool("video_canvas_delete_shape", "Remove a card from a canvas without deleting repository assets.", {
     shape_id: { type: "string" }
   }, (args) => service.deleteCanvasShape(args)));
 
-  api.registerTool(tool("video_canvas_link_shapes", "Create or update a relationship edge between two canvas shapes.", {
+  registerToolDefinition(api, tool("video_canvas_link_shapes", "Create or update a relationship edge between two canvas shapes.", {
     canvas_id: { type: "string" },
     edge_id: { type: "string" },
     source_shape_id: { type: "string" },
@@ -812,21 +1326,21 @@ function registerTools(api) {
     props: { type: "object", additionalProperties: true }
   }, (args) => service.linkCanvasShapes(args)));
 
-  api.registerTool(tool("video_canvas_unlink_shapes", "Delete a canvas relationship edge.", {
+  registerToolDefinition(api, tool("video_canvas_unlink_shapes", "Delete a canvas relationship edge.", {
     edge_id: { type: "string" }
   }, (args) => service.unlinkCanvasShapes(args)));
 
-  api.registerTool(tool("video_canvas_agent_context", "Return Agent-readable canvas context, visible shapes, offscreen clusters, and lint issues.", {
+  registerToolDefinition(api, tool("video_canvas_agent_context", "Return Agent-readable canvas context, visible shapes, offscreen clusters, and lint issues.", {
     canvas_id: { type: "string" },
     viewport: { type: "object", additionalProperties: true }
   }, (args) => service.canvasAgentContext(args)));
 
-  api.registerTool(tool("video_canvas_widget_context", "Return native-widget-ready canvas context with selection and view state.", {
+  registerToolDefinition(api, tool("video_canvas_widget_context", "Return native-widget-ready canvas context with selection and view state.", {
     canvas_id: { type: "string" },
     viewport: { type: "object", additionalProperties: true }
   }, (args) => service.canvasWidgetContext(args)));
 
-  api.registerTool(rawTool("render_video_assets_canvas_widget", "Return a Cowart-style native widget render descriptor for the Video Assets infinite canvas.", {
+  registerToolDefinition(api, rawTool("render_video_assets_canvas_widget", "Return a Cowart-style native widget render descriptor for the Video Assets infinite canvas.", {
     canvas_id: { type: "string" },
     project_id: { type: "string" },
     title: { type: "string" },
@@ -834,38 +1348,38 @@ function registerTools(api) {
     viewport: { type: "object", additionalProperties: true }
   }, (args) => service.renderCanvasWidget(args)));
 
-  api.registerTool(tool("video_canvas_save_selection", "Save transient canvas widget selection without creating an audit commit.", {
+  registerToolDefinition(api, tool("video_canvas_save_selection", "Save transient canvas widget selection without creating an audit commit.", {
     canvas_id: { type: "string" },
     selected_shape_ids: { type: "array", items: { type: "string" } },
     primary_shape_id: { type: "string" },
     source: { type: "string" }
   }, (args) => service.saveCanvasSelection(args)));
 
-  api.registerTool(tool("video_canvas_get_selection", "Get the current transient canvas widget selection.", {
+  registerToolDefinition(api, tool("video_canvas_get_selection", "Get the current transient canvas widget selection.", {
     canvas_id: { type: "string" }
   }, (args) => service.getCanvasSelection(args)));
 
-  api.registerTool(tool("video_canvas_save_view_state", "Save transient canvas widget viewport state without creating an audit commit.", {
+  registerToolDefinition(api, tool("video_canvas_save_view_state", "Save transient canvas widget viewport state without creating an audit commit.", {
     canvas_id: { type: "string" },
     viewport: { type: "object", additionalProperties: true },
     source: { type: "string" }
   }, (args) => service.saveCanvasViewState(args)));
 
-  api.registerTool(tool("video_canvas_get_view_state", "Get the current transient canvas widget viewport state.", {
+  registerToolDefinition(api, tool("video_canvas_get_view_state", "Get the current transient canvas widget viewport state.", {
     canvas_id: { type: "string" }
   }, (args) => service.getCanvasViewState(args)));
 
-  api.registerTool(tool("video_canvas_generation_package", "Build a generation-prep input package from a production canvas.", {
+  registerToolDefinition(api, tool("video_canvas_generation_package", "Build a generation-prep input package from a production canvas.", {
     canvas_id: { type: "string" },
     generation_type: { type: "string", enum: ["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"] }
   }, (args) => service.canvasGenerationPackage(args)));
 
-  api.registerTool(tool("video_canvas_generation_handoff", "Build an executable generation handoff package from a production canvas.", {
+  registerToolDefinition(api, tool("video_canvas_generation_handoff", "Build an executable generation handoff package from a production canvas.", {
     canvas_id: { type: "string" },
     generation_type: { type: "string", enum: ["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"] }
   }, (args) => service.canvasGenerationHandoff(args)));
 
-  api.registerTool(tool("video_canvas_export_annotation_brief", "Build a review brief from a canvas shape for annotation or revision planning.", {
+  registerToolDefinition(api, tool("video_canvas_export_annotation_brief", "Build a review brief from a canvas shape for annotation or revision planning.", {
     canvas_id: { type: "string" },
     shape_id: { type: "string" },
     title: { type: "string" },
@@ -877,7 +1391,7 @@ function registerTools(api) {
     visibility: { type: "string", enum: ["internal", "project", "public_summary"] }
   }, (args) => service.canvasReviewBrief(args)));
 
-  api.registerTool(tool("video_canvas_register_review_annotation", "Register a canvas review note on the selected asset, version, entity, or project reference.", {
+  registerToolDefinition(api, tool("video_canvas_register_review_annotation", "Register a canvas review note on the selected asset, version, entity, or project reference.", {
     canvas_id: { type: "string" },
     shape_id: { type: "string" },
     title: { type: "string" },
@@ -890,7 +1404,7 @@ function registerTools(api) {
     structured: { type: "object", additionalProperties: true }
   }, (args) => service.registerCanvasReviewAnnotation(args)));
 
-  api.registerTool(tool("video_canvas_create_revision_card", "Create a canvas revision card from a review annotation or generated output lineage.", {
+  registerToolDefinition(api, tool("video_canvas_create_revision_card", "Create a canvas revision card from a review annotation or generated output lineage.", {
     canvas_id: { type: "string" },
     source_shape_id: { type: "string" },
     shape_id: { type: "string" },
@@ -908,14 +1422,14 @@ function registerTools(api) {
     height: { type: "number" }
   }, (args) => service.createCanvasRevisionCard(args)));
 
-  api.registerTool(tool("video_canvas_update_revision_card_status", "Update a canvas revision card workflow status without changing its source annotation or output lineage.", {
+  registerToolDefinition(api, tool("video_canvas_update_revision_card_status", "Update a canvas revision card workflow status without changing its source annotation or output lineage.", {
     shape_id: { type: "string" },
     status: { type: "string", enum: ["open", "in_progress", "resolved", "rejected"] },
     status_note: { type: "string" },
     title: { type: "string" }
   }, (args) => service.updateCanvasRevisionCardStatus(args)));
 
-  api.registerTool(tool("video_canvas_insert_generated_asset", "Ingest a generated file, add it to the project, and write it back beside a generation slot.", {
+  registerToolDefinition(api, tool("video_canvas_insert_generated_asset", "Ingest a generated file, add it to the project, and write it back beside a generation slot.", {
     canvas_id: { type: "string" },
     slot_shape_id: { type: "string" },
     file_path: { type: "string" },
@@ -933,7 +1447,7 @@ function registerTools(api) {
     slot_status: { type: "string", enum: ["empty", "ready", "generating", "filled", "blocked"] }
   }, (args) => service.insertGeneratedAsset(args)));
 
-  api.registerTool(tool("video_canvas_fill_generation_slot", "Fill a generation slot with a generated file using ingest-first asset writeback defaults.", {
+  registerToolDefinition(api, tool("video_canvas_fill_generation_slot", "Fill a generation slot with a generated file using ingest-first asset writeback defaults.", {
     canvas_id: { type: "string" },
     slot_shape_id: { type: "string" },
     file_path: { type: "string" },
@@ -952,51 +1466,55 @@ function registerTools(api) {
     slot_status: { type: "string", enum: ["empty", "ready", "generating", "filled", "blocked"] }
   }, (args) => service.fillGenerationSlot(args)));
 
-  api.registerTool(tool("video_audio_doubao_plan", "Build a Doubao Audio 1.0 request package without executing generation.", doubaoAudioToolSchema({
+  registerToolDefinition(api, tool("video_audio_doubao_plan", "Build a Doubao Audio 1.0 request package without executing generation.", doubaoAudioToolSchema({
     includeCanvas: false
   }), (args) => service.doubaoAudioPlan(args)));
 
-  api.registerTool(tool("video_audio_doubao_generate", "Run Doubao Audio 1.0 generation and ingest outputs as cleared assets after platform review.", doubaoAudioToolSchema({
+  registerToolDefinition(api, tool("video_audio_doubao_generate", "Run Doubao Audio 1.0 generation and ingest outputs. Platform review is a content review only and does not authorise rights: outputs default to license_status=unknown unless the caller passes an evidenced rights value.", doubaoAudioToolSchema({
     includeCanvas: false
   }), (args) => service.doubaoAudioGenerate(args)));
 
-  api.registerTool(tool("video_canvas_doubao_audio_plan", "Build a Doubao Audio 1.0 request package from a canvas audio generation slot.", doubaoAudioToolSchema({
+  registerToolDefinition(api, tool("video_canvas_doubao_audio_plan", "Build a Doubao Audio 1.0 request package from a canvas audio generation slot.", doubaoAudioToolSchema({
     includeCanvas: true
   }), (args) => service.canvasDoubaoAudioPlan(args)));
 
-  api.registerTool(tool("video_canvas_doubao_audio_generate", "Run Doubao Audio 1.0 generation from a canvas audio slot and write outputs back to canvas.", doubaoAudioToolSchema({
+  registerToolDefinition(api, tool("video_canvas_doubao_audio_generate", "Run Doubao Audio 1.0 generation from a canvas audio slot and write outputs back to canvas.", doubaoAudioToolSchema({
     includeCanvas: true
   }), (args) => service.canvasDoubaoAudioGenerate(args)));
 
-  api.registerTool(tool("video_audio_kie_suno_plan", "Build a KIE Suno API music request package without submitting a task.", kieSunoToolSchema({
+  registerToolDefinition(api, tool("video_audio_kie_suno_plan", "Build a KIE Suno API music request package without submitting a task.", kieSunoToolSchema({
     includeCanvas: false
   }), (args) => service.kieSunoPlan(args)));
 
-  api.registerTool(tool("video_audio_kie_suno_generate", "Run KIE Suno API music generation and ingest downloaded outputs as rights-unknown assets.", kieSunoToolSchema({
+  registerToolDefinition(api, tool("video_audio_kie_suno_generate", "Run KIE Suno API music generation and ingest downloaded outputs as rights-unknown assets.", kieSunoToolSchema({
     includeCanvas: false
   }), (args) => service.kieSunoGenerate(args)));
 
-  api.registerTool(tool("video_canvas_kie_suno_audio_plan", "Build a KIE Suno request package from a canvas audio generation slot.", kieSunoToolSchema({
+  registerToolDefinition(api, tool("video_canvas_kie_suno_audio_plan", "Build a KIE Suno request package from a canvas audio generation slot.", kieSunoToolSchema({
     includeCanvas: true
   }), (args) => service.canvasKieSunoPlan(args)));
 
-  api.registerTool(tool("video_canvas_kie_suno_audio_generate", "Run KIE Suno generation from a canvas audio slot and write outputs back to canvas.", kieSunoToolSchema({
+  registerToolDefinition(api, tool("video_canvas_kie_suno_audio_generate", "Run KIE Suno generation from a canvas audio slot and write outputs back to canvas.", kieSunoToolSchema({
     includeCanvas: true
   }), (args) => service.canvasKieSunoGenerate(args)));
 
-  api.registerTool(tool("video_canvas_dreamina_cli_plan", "Build a Dreamina CLI execution plan from a canvas handoff without consuming credits.", {
+  registerToolDefinition(api, tool("video_canvas_dreamina_cli_plan", "Build a Dreamina CLI execution plan from a canvas handoff without consuming credits.", {
     canvas_id: { type: "string" },
-    generation_type: { type: "string", enum: ["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"] }
+    generation_type: { type: "string", enum: ["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"] },
+    model_version: { type: "string" },
+    resolution_type: { type: "string", enum: videoSchema.imageResolutionTypes },
+    generate_num: { type: "number" },
+    ratio: { type: "string" }
   }, (args) => service.canvasDreaminaCliPlan(args)));
 
-  api.registerTool(tool("video_canvas_dreamina_cli_generate_video", "Run Dreamina CLI video generation from a canvas handoff with strict video model parameter validation.", {
+  registerToolDefinition(api, tool("video_canvas_dreamina_cli_generate_video", `Run Dreamina CLI video generation from a canvas handoff with strict video model parameter validation. model_version enum is derived from the capability registry (src/capability-registry.js); legacy values stay accepted for backward compatibility while read-only history values are rejected for new requests.`, {
     canvas_id: { type: "string" },
     generation_type: { type: "string", enum: ["image_to_video", "text_to_video", "multimodal_to_video"] },
     prompt: { type: "string" },
-    model_version: { type: "string", enum: ["3.0", "3.0fast", "3.0pro", "3.0_fast", "3.0_pro", "3.5pro", "3.5_pro", "seedance2.0", "seedance2.0fast", "seedance2.0_vip", "seedance2.0fast_vip", "seedance2.0mini"] },
+    model_version: { type: "string", enum: videoSchema.modelVersion },
     duration: { type: "number" },
-    video_resolution: { type: "string", enum: ["720p", "1080p"] },
-    ratio: { type: "string", enum: ["1:1", "3:4", "16:9", "4:3", "9:16", "21:9"] },
+    video_resolution: { type: "string", enum: videoSchema.videoResolution },
+    ratio: { type: "string", enum: imageSchema.ratio },
     poll: { type: "number" },
     session: { type: "number" },
     output_dir: { type: "string" },
@@ -1014,70 +1532,186 @@ function registerTools(api) {
     actor_type: { type: "string" }
   }, (args) => service.canvasDreaminaCliGenerateVideo(args)));
 
-  api.registerTool(tool("video_canvas_lint", "Lint a canvas for missing bindings and production readiness warnings.", {
+  registerToolDefinition(api, tool("video_canvas_dreamina_cli_generate_image", "Run Dreamina CLI image generation from a canvas handoff with strict image model parameter validation. model_version enum is derived from the capability registry; 5.0Pro keeps the CLI's original spelling.", {
+    canvas_id: { type: "string" },
+    generation_type: { type: "string", enum: ["image", "cover", "edit"] },
+    prompt: { type: "string" },
+    model_version: { type: "string", enum: imageSchema.modelVersion },
+    resolution_type: { type: "string", enum: imageSchema.resolutionType },
+    ratio: { type: "string", enum: imageSchema.ratio },
+    generate_num: { type: "number" },
+    width: { type: "number" },
+    height: { type: "number" },
+    poll: { type: "number" },
+    output_dir: { type: "string" },
+    execute: { type: "boolean" },
+    accept_credit_spend: { type: "boolean" },
+    run_preflight: { type: "boolean" },
+    download_outputs: { type: "boolean" },
+    ingest_outputs: { type: "boolean" },
+    writeback_canvas: { type: "boolean" },
+    output_title: { type: "string" },
+    license_status: { type: "string", enum: ["unknown", "cleared", "restricted", "rejected"] },
+    risk_level: { type: "string", enum: ["unknown", "low", "medium", "high"] },
+    timeout_ms: { type: "number" },
+    actor_id: { type: "string" },
+    actor_type: { type: "string" }
+  }, (args) => service.canvasDreaminaCliGenerateImage(args)));
+
+  registerToolDefinition(api, tool("video_canvas_dreamina_cli_upscale_image", "Run Dreamina CLI image upscale (2k/4k/8k) on a given asset version, optionally writing output back to canvas.", {
+    asset_version_id: { type: "string" },
+    canvas_id: { type: "string" },
+    resolution_type: { type: "string", enum: imageSchema.upscaleResolution },
+    poll: { type: "number" },
+    output_dir: { type: "string" },
+    execute: { type: "boolean" },
+    accept_credit_spend: { type: "boolean" },
+    run_preflight: { type: "boolean" },
+    download_outputs: { type: "boolean" },
+    ingest_outputs: { type: "boolean" },
+    writeback_canvas: { type: "boolean" },
+    output_title: { type: "string" },
+    license_status: { type: "string", enum: ["unknown", "cleared", "restricted", "rejected"] },
+    risk_level: { type: "string", enum: ["unknown", "low", "medium", "high"] },
+    timeout_ms: { type: "number" },
+    actor_id: { type: "string" },
+    actor_type: { type: "string" }
+  }, (args) => service.canvasDreaminaCliUpscaleImage(args)));
+
+  registerToolDefinition(api, tool("video_canvas_lint", "Lint a canvas for missing bindings and production readiness warnings.", {
     canvas_id: { type: "string" }
   }, (args) => service.lintCanvas(args)));
 }
 
+/**
+ * REN-06: the streaming upload route.
+ *
+ * One route, prefix-matched, dispatching internally by method and sub-path. One rather than several
+ * because the REN-01 registration contract counts routes and each additional registration is another
+ * thing that can drift from the single base-path source; the sub-path grammar is documented in
+ * upload-routes.js and exercised by the acceptance checks.
+ *
+ * Uploads can NOT go through the `rpc` route: that handler reads the whole request body into memory as
+ * JSON, so a 200 MiB file would need a ~270 MiB base64 body buffer on the server. Streaming is the
+ * requirement, so the transport has to accept a raw body - which is what this route is for.
+ */
+function registerUploadRoute(api) {
+  const prefix = paths.prefix(ROUTE_SEGMENTS.upload);
+  registerHttpRouteChecked(api, {
+    path: prefix,
+    auth: "plugin",
+    match: "prefix",
+    handler: async (req, res) => {
+      if (!uploadHandlers) return sendJson(res, 503, { ok: false, code: "UPLOAD_NOT_READY", error: "the upload subsystem is not initialised" });
+      let relativePath = "/";
+      try {
+        const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+        // Strip the SEGMENT (".../upload"), not the whole registered prefix. Slicing by the prefix length
+        // while holding a base-path-relative string mixed two coordinate systems and silently produced the
+        // collection branch for item URLs, so every chunk request answered 405. The segment root is the
+        // single source of truth, so it is what gets removed.
+        const relative = paths.relative(pathname);
+        const segmentRoot = `/${ROUTE_SEGMENTS.upload}`;
+        relativePath = relative.startsWith(segmentRoot) ? relative.slice(segmentRoot.length) : "/";
+        if (relativePath.startsWith("/")) relativePath = relativePath.slice(1);
+      } catch {
+        return sendJson(res, 400, { ok: false, code: "UPLOAD_PATH_INVALID", error: "the request path is not under the upload route" });
+      }
+      return uploadHandlers.handle(req, res, relativePath);
+    }
+  });
+}
+
 function registerSecurityRoutes(api) {
-  api.registerHttpRoute({
-    path: "/__openclaw__/video-assets/auth/login",
+  registerHttpRouteChecked(api, {
+    path: paths.exact(ROUTE_SEGMENTS.authLogin),
     auth: "plugin",
     match: "exact",
     handler: async (req, res) => {
       if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "method not allowed" });
-      const origin = security.checkOrigin(req);
-      if (!origin.ok) return sendJson(res, origin.status, { ok: false, error: origin.error });
+      // Login is exempt from the missing-Origin rule: the caller has no session yet, so there is no
+      // ambient credential to abuse, and a supplied foreign Origin is still rejected.
+      const gate = security.checkRequest(req, { method: req.method, isLoginRoute: true });
+      if (!gate.ok) return sendJson(res, gate.status, { ok: false, error: gate.error, code: gate.code });
       try {
         const body = await readJsonBody(req);
+        const client = security.resolveClient(req);
         const result = await security.login({
           password: body.password,
-          ip: getClientIp(req),
+          ip: client.address,
+          address: client.address,
+          addressSource: client.address_source,
           userAgent: String(req.headers["user-agent"] ?? "")
         });
         if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
-        setSessionCookie(res, result.token, security.sessionTtlMs);
-        return sendJson(res, 200, { ok: true });
+        const cookie = security.cookieOptions(req);
+        setSessionCookie(res, result.token, security.sessionTtlMs, cookie);
+        return sendJson(res, 200, { ok: true, session: result.session ?? null, cookie: { secure: cookie.secure, path: cookie.path } });
       } catch (error) {
         return sendJson(res, error.status ?? 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
     }
   });
 
-  api.registerHttpRoute({
-    path: "/__openclaw__/video-assets/auth/logout",
+  registerHttpRouteChecked(api, {
+    path: paths.exact(ROUTE_SEGMENTS.authLogout),
     auth: "plugin",
     match: "exact",
     handler: async (req, res) => {
+      // The route count and RPC surface are frozen by the REN-01 contract checks, so the operator
+      // session surface lives on this existing path: POST = log out this session, DELETE = revoke
+      // every session, GET = token-free session inventory + the effective security posture.
+      if (req.method === "GET" || req.method === "HEAD") {
+        const gate = security.checkRequest(req, { method: req.method ?? "GET" });
+        if (!gate.ok) return sendJson(res, gate.status, { ok: false, error: gate.error, code: gate.code });
+        const auth = security.authenticateRequest(req);
+        if (!auth.ok) return sendJson(res, auth.status, { ok: false, error: auth.error });
+        return sendJson(res, 200, {
+          ok: true,
+          sessions: security.listSessions(),
+          describe: security.describe(),
+          decisions: security.recentDecisions(10)
+        });
+      }
+      if (req.method !== "POST" && req.method !== "DELETE") return sendJson(res, 405, { ok: false, error: "method not allowed" });
+      const gate = security.checkRequest(req, { method: req.method });
+      if (!gate.ok) return sendJson(res, gate.status, { ok: false, error: gate.error, code: gate.code });
       const auth = security.authenticateRequest(req);
       if (!auth.ok) return sendJson(res, auth.status, { ok: false, error: auth.error });
-      security.logout(getRequestToken(req));
-      clearSessionCookie(res);
+      if (req.method === "DELETE") {
+        const result = security.revokeAllSessions("operator-revoke-all");
+        clearSessionCookie(res, security.cookieOptions(req));
+        return sendJson(res, 200, { ok: true, revoked: result.dropped });
+      }
+      security.revokeSession(getRequestToken(req), "logout");
+      clearSessionCookie(res, security.cookieOptions(req));
       return sendJson(res, 200, { ok: true });
     }
   });
 
-  api.registerHttpRoute({
-    path: "/__openclaw__/video-assets/auth/status",
+  registerHttpRouteChecked(api, {
+    path: paths.exact(ROUTE_SEGMENTS.authStatus),
     auth: "plugin",
     match: "exact",
     handler: async (req, res) => {
+      const gate = security.checkRequest(req, { method: req.method ?? "GET" });
+      if (!gate.ok) return sendJson(res, gate.status, { ok: false, error: gate.error, code: gate.code });
       const auth = security.authenticateRequest(req);
       if (!auth.ok) return sendJson(res, auth.status, { ok: false, error: auth.error });
-      return sendJson(res, 200, { ok: true, actor_id: auth.actor_id });
+      return sendJson(res, 200, { ok: true, actor_id: auth.actor_id, actor_source: auth.source ?? "plugin-session", session_id: auth.session_id ?? null });
     }
   });
 }
 
 function registerUiApiRoute(api) {
-  api.registerHttpRoute({
-    path: "/__openclaw__/video-assets/rpc/",
+  registerHttpRouteChecked(api, {
+    path: paths.prefix(ROUTE_SEGMENTS.rpc),
     auth: "plugin",
     match: "prefix",
     handler: async (req, res) => {
       if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "method not allowed" });
-      const origin = security.checkOrigin(req);
-      if (!origin.ok) return sendJson(res, origin.status, { ok: false, error: origin.error });
+      const gate = security.checkRequest(req, { method: req.method });
+      if (!gate.ok) return sendJson(res, gate.status, { ok: false, error: gate.error, code: gate.code });
       const auth = security.authenticateRequest(req);
       if (!auth.ok) return sendJson(res, auth.status, { ok: false, error: auth.error });
       try {
@@ -1085,7 +1719,19 @@ function registerUiApiRoute(api) {
         const method = String(body.method ?? "");
         const handler = uiBrowserRpc()[method];
         if (!handler) return sendJson(res, 404, { ok: false, error: `unknown ui rpc method: ${method}` });
-        return sendJson(res, 200, { ok: true, result: await handler(body.params ?? {}) });
+        // The only trusted identity on this surface is the plugin session that just authenticated.
+        // The session exists because someone supplied the admin password, so it carries the operator
+        // scope - the generation policy therefore sees a real identity AND a real scope instead of
+        // relying on a surface grant.
+        const context = buildTrustedContext({
+          surface: "browser",
+          actorId: auth.actor_id,
+          actorType: "human",
+          trusted: true,
+          source: auth.source ?? "plugin-session",
+          scopes: ["operator.admin"]
+        });
+        return sendJson(res, 200, { ok: true, result: await handler(withTrustedContext(body.params ?? {}, context)) });
       } catch (error) {
         return sendJson(res, error.status ?? 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
@@ -1094,29 +1740,35 @@ function registerUiApiRoute(api) {
 }
 
 function registerSecureFileRoutes(api) {
-  api.registerHttpRoute({
-    path: "/__openclaw__/video-assets/file/",
+  // /file/ keeps its DOWNLOAD semantics by default and serves the same object INLINE when asked
+  // with ?disposition=inline, which is the URL a player uses. The split is a query parameter
+  // rather than a new route because the file route already owns that URL, and a second route
+  // for the same object would duplicate its authentication and range handling. (REN-06 does add
+  // ONE route - the streaming upload endpoint - declared in ROUTE_SEGMENTS and named, with its
+  // reason, in the registration contract test.)
+    registerHttpRouteChecked(api, {
+    path: paths.prefix(ROUTE_SEGMENTS.file),
     auth: "plugin",
     match: "prefix",
-    handler: async (req, res) => handleVersionFileRequest(req, res)
+    handler: async (req, res) => handleVersionFileRequest(req, res, paths.prefix(ROUTE_SEGMENTS.file), DISPOSITION_ATTACHMENT)
   });
-  api.registerHttpRoute({
-    path: "/__openclaw__/video-assets/thumb/",
+  registerHttpRouteChecked(api, {
+    path: paths.prefix(ROUTE_SEGMENTS.thumb),
     auth: "plugin",
     match: "prefix",
-    handler: async (req, res) => handleDerivedFileRequest(req, res, "/__openclaw__/video-assets/thumb/", ["thumbnail", "contact_sheet"], "thumbnail")
+    handler: async (req, res) => handleDerivedFileRequest(req, res, paths.prefix(ROUTE_SEGMENTS.thumb), ["thumbnail", "contact_sheet"], "thumbnail")
   });
-  api.registerHttpRoute({
-    path: "/__openclaw__/video-assets/proxy/",
+  registerHttpRouteChecked(api, {
+    path: paths.prefix(ROUTE_SEGMENTS.proxy),
     auth: "plugin",
     match: "prefix",
-    handler: async (req, res) => handleDerivedFileRequest(req, res, "/__openclaw__/video-assets/proxy/", ["proxy", "transcode", "audio_proxy"], "proxy")
+    handler: async (req, res) => handleDerivedFileRequest(req, res, paths.prefix(ROUTE_SEGMENTS.proxy), ["proxy", "transcode", "audio_proxy"], "proxy")
   });
 }
 
 function registerUiRoutes(api) {
-  api.registerHttpRoute({
-    path: "/__openclaw__/video-assets/workbench/",
+  registerHttpRouteChecked(api, {
+    path: paths.prefix(ROUTE_SEGMENTS.workbench),
     auth: "plugin",
     match: "prefix",
     handler: async (req, res) => handleUiAssetRequest(req, res)
@@ -1127,11 +1779,12 @@ async function handleUiAssetRequest(req, res) {
   if (req.method !== "GET" && req.method !== "HEAD") {
     return sendJson(res, 405, { ok: false, error: "method not allowed" });
   }
-  const origin = security.checkOrigin(req);
-  if (!origin.ok) return sendJson(res, origin.status, { ok: false, error: origin.error });
+  const gate = security.checkRequest(req, { method: req.method });
+  if (!gate.ok) return sendJson(res, gate.status, { ok: false, error: gate.error, code: gate.code });
   try {
-    const url = new URL(req.url ?? "/__openclaw__/video-assets/workbench/", "http://127.0.0.1");
-    let relativePath = decodeURIComponent(url.pathname.slice("/__openclaw__/video-assets/workbench/".length));
+    const url = new URL(req.url ?? paths.prefix(ROUTE_SEGMENTS.workbench), "http://127.0.0.1");
+    const workbenchPrefix = paths.prefix(ROUTE_SEGMENTS.workbench);
+    let relativePath = decodeURIComponent(url.pathname.slice(workbenchPrefix.length));
     if (!relativePath || relativePath.endsWith("/")) relativePath = `${relativePath}index.html`;
     let filePath = safeResolveUiPath(relativePath);
     if (!fs.existsSync(filePath) || (await fs.promises.stat(filePath)).isDirectory()) {
@@ -1175,32 +1828,41 @@ function contentTypeFor(filePath) {
   }[ext] ?? "application/octet-stream";
 }
 
-async function handleVersionFileRequest(req, res) {
+async function handleVersionFileRequest(req, res, prefix, defaultDisposition = DISPOSITION_ATTACHMENT) {
   if (req.method !== "GET" && req.method !== "HEAD") {
     return sendJson(res, 405, { ok: false, error: "method not allowed" });
   }
-  const origin = security.checkOrigin(req);
-  if (!origin.ok) return sendJson(res, origin.status, { ok: false, error: origin.error });
+  const gate = security.checkRequest(req, { method: req.method });
+  if (!gate.ok) return sendJson(res, gate.status, { ok: false, error: gate.error, code: gate.code });
   const auth = security.authenticateRequest(req);
   if (!auth.ok) return sendJson(res, auth.status, { ok: false, error: auth.error });
 
-  try {
-    const assetVersionId = extractRouteId(req.url, "/__openclaw__/video-assets/file/");
-    const file = service.resolveVersionFile(assetVersionId);
-    const stat = await fs.promises.stat(file.file_path);
-    if (!stat.isFile()) return sendJson(res, 404, { ok: false, error: "file object is missing" });
+  // The route decides the disposition, and a query parameter may ask for inline explicitly. It may
+  // NOT ask for anything else: an unknown disposition value falls back to the route default rather
+  // than being echoed into the header.
+  const requested = new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("disposition");
+  const disposition = requested === "inline" ? DISPOSITION_INLINE : defaultDisposition;
 
+  try {
+    // The prefix comes from the route that matched, so the identifier is always sliced out of the
+    // segment this handler was registered for.
+    const assetVersionId = extractRouteId(req.url, prefix);
+    const file = service.resolveVersionFile(assetVersionId);
     applySecurityHeaders(res, { contentSecurityPolicy: null });
-    res.statusCode = 200;
-    res.setHeader("content-type", file.mime_type || "application/octet-stream");
-    res.setHeader("content-length", String(stat.size));
-    res.setHeader("content-disposition", `attachment; filename="${sanitizeDownloadName(file.file_name)}"`);
-    res.setHeader("x-openclaw-asset-version-id", file.asset_version_id);
-    res.setHeader("x-openclaw-content-sha256", file.sha256);
-    if (req.method === "HEAD") return res.end();
-    return fs.createReadStream(file.file_path).pipe(res);
+    return await sendMedia(req, res, descriptorFromResolved(file, { disposition }));
   } catch (error) {
-    return sendJson(res, error.status ?? 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    // A refusal must not describe the filesystem: the fixed sentences below keep a caller from
+    // learning object-store paths, and the JSON error envelope is produced by sendStreamError.
+    if (error?.code === "MEDIA_OBJECT_MISSING" || error?.code === "ENOENT") {
+      return sendStreamError(res, 404, "MEDIA_OBJECT_MISSING", "the media object is missing");
+    }
+    if (/not found/i.test(String(error?.message ?? ""))) {
+      return sendStreamError(res, 404, "MEDIA_NOT_FOUND", "no media object is registered for that identifier");
+    }
+    if (/invalid route/i.test(String(error?.message ?? ""))) {
+      return sendStreamError(res, 400, "MEDIA_ROUTE_INVALID", "the media route identifier is invalid");
+    }
+    return sendStreamError(res, error?.status ?? 500, "MEDIA_UNAVAILABLE", "the media object could not be served");
   }
 }
 
@@ -1208,31 +1870,28 @@ async function handleDerivedFileRequest(req, res, prefix, allowedTypes, label) {
   if (req.method !== "GET" && req.method !== "HEAD") {
     return sendJson(res, 405, { ok: false, error: "method not allowed" });
   }
-  const origin = security.checkOrigin(req);
-  if (!origin.ok) return sendJson(res, origin.status, { ok: false, error: origin.error });
+  const gate = security.checkRequest(req, { method: req.method });
+  if (!gate.ok) return sendJson(res, gate.status, { ok: false, error: gate.error, code: gate.code });
   const auth = security.authenticateRequest(req);
   if (!auth.ok) return sendJson(res, auth.status, { ok: false, error: auth.error });
 
   try {
     const identifier = extractRouteId(req.url, prefix);
     const file = service.resolveDerivedFile(identifier, allowedTypes);
-    const stat = await fs.promises.stat(file.file_path);
-    if (!stat.isFile()) return sendJson(res, 404, { ok: false, error: `${label} object is missing` });
-
     applySecurityHeaders(res, { contentSecurityPolicy: null });
-    res.statusCode = 200;
-    res.setHeader("content-type", file.mime_type || "application/octet-stream");
-    res.setHeader("content-length", String(stat.size));
-    res.setHeader("content-disposition", `inline; filename="${sanitizeDownloadName(file.file_name)}"`);
-    res.setHeader("x-openclaw-asset-id", file.asset_id);
-    res.setHeader("x-openclaw-asset-version-id", file.asset_version_id);
-    res.setHeader("x-openclaw-derived-file-id", file.derived_file_id);
-    res.setHeader("x-openclaw-derivative-type", file.derivative_type);
-    res.setHeader("x-openclaw-content-sha256", file.sha256);
-    if (req.method === "HEAD") return res.end();
-    return fs.createReadStream(file.file_path).pipe(res);
+    // Thumbnails and proxies are playback/display surfaces, so they are inline and range-capable.
+    return await sendMedia(req, res, descriptorFromResolved(file, { disposition: DISPOSITION_INLINE }));
   } catch (error) {
-    return sendJson(res, error.status ?? 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    if (/not one of/i.test(String(error?.message ?? ""))) {
+      return sendStreamError(res, 404, "DERIVATIVE_TYPE_MISMATCH", `no ${label} is registered for that identifier`);
+    }
+    if (/not found/i.test(String(error?.message ?? ""))) {
+      return sendStreamError(res, 404, "DERIVATIVE_NOT_FOUND", `no ${label} is registered for that identifier`);
+    }
+    if (/invalid route/i.test(String(error?.message ?? ""))) {
+      return sendStreamError(res, 400, "MEDIA_ROUTE_INVALID", "the media route identifier is invalid");
+    }
+    return sendStreamError(res, error?.status ?? 500, "MEDIA_UNAVAILABLE", `the ${label} object could not be served`);
   }
 }
 
@@ -1252,6 +1911,12 @@ function registerRpc(api) {
   const rpc = allRpc();
 
   for (const [name, definition] of Object.entries(rpc)) {
+    const scopeCheck = validateGatewayScope(definition.scope);
+    if (!scopeCheck.ok) {
+      api.logger.error?.(`[video-assets] ${scopeCheck.error.message}`);
+      throw scopeCheck.error;
+    }
+    requireRegistration("gateway-method", name, { detail: definition.scope });
     api.registerGatewayMethod(name, createGatewayRpcHandler(definition), { scope: definition.scope });
   }
 }
@@ -1259,6 +1924,8 @@ function registerRpc(api) {
 function allRpc() {
   return {
     "videoAssets.asset.search": read((params) => service.searchAssets(params)),
+    // Gate 3: server-side filter + sort + total, so the workbench never truncates a large repository.
+    "videoAssets.asset.browse": read((params) => service.browseAssets(params)),
     "videoAssets.asset.get": read((params) => service.getAsset(params)),
     "videoAssets.asset.updateMetadata": write((params) => service.updateAssetMetadata(params)),
     "videoAssets.asset.updateRights": write((params) => service.updateAssetRights(params)),
@@ -1326,6 +1993,20 @@ function allRpc() {
     "videoAssets.canvas.dreaminaCliPlan": read((params) => service.canvasDreaminaCliPlan(params)),
     "videoAssets.canvas.dreaminaCliGenerateVideo": write((params) => service.canvasDreaminaCliGenerateVideo(params)),
     "videoAssets.canvas.lint": read((params) => service.lintCanvas(params)),
+    // REN-08: the editable canvas. THREE methods, not one per gesture, because every gesture is the same operation
+    // with a different payload: apply a command against a revision. Adding drag/connect/delete/copy/undo as separate
+    // RPCs would multiply the concurrency question by the number of gestures and leave each one to answer it alone.
+    "videoAssets.canvas.getRevision": read((params) => service.getCanvasRevision(params)),
+    "videoAssets.canvas.applyCommand": write((params) => service.applyCanvasCommand(params)),
+    "videoAssets.canvas.listCommands": read((params) => service.listCanvasCommands(params)),
+    "videoAssets.generationJob.create": write((params) => service.createGenerationJob(params)),
+    "videoAssets.generationJob.get": read((params) => service.getGenerationJob(params)),
+    "videoAssets.generationJob.list": read((params) => service.listGenerationJobs(params)),
+    "videoAssets.generationJob.events": read((params) => service.generationJobEvents(params)),
+    "videoAssets.generationJob.process": write((params) => service.processGenerationJob(params)),
+    "videoAssets.generationJob.reconcile": write((params) => service.reconcileGenerationJob(params)),
+    "videoAssets.generationJob.resume": write((params) => service.resumeGenerationJob(params)),
+    "videoAssets.generationJob.cancel": write((params) => service.cancelGenerationJob(params)),
     "videoAssets.file.roots": read(() => service.fileRoots()),
     "videoAssets.file.list": read((params) => service.listFiles(params)),
     "videoAssets.file.inspect": read((params) => service.inspectFile(params)),
@@ -1334,7 +2015,7 @@ function allRpc() {
     "videoAssets.staging.ingest": write((params) => service.ingestStagingFile(params)),
     "videoAssets.staging.reject": write((params) => service.rejectStagingFile(params)),
     "videoAssets.audit.commits": read((params) => service.listCommits(params)),
-    "videoAssets.ui.dashboardSummary": read(() => service.uiDashboardSummary())
+    "videoAssets.ui.dashboardSummary": read((params) => ({ ...service.uiDashboardSummary(), security: securityDiagnostics() })),
   };
 }
 
@@ -1369,7 +2050,16 @@ function uiBrowserRpc() {
     "videoAssets.canvas.kieSunoAudioGenerate",
     "videoAssets.canvas.deleteShape",
     "videoAssets.canvas.linkShapes",
-    "videoAssets.canvas.unlinkShapes"
+    "videoAssets.canvas.unlinkShapes",
+    // REN-08: the editor's own write path. It is on the allowlist because the workbench IS the editing surface -
+    // the browser is where a person drags a card, and it reaches the service with the same session identity as
+    // every other browser write. The two read methods need no entry: operator.read is allowlisted by scope.
+    "videoAssets.canvas.applyCommand",
+    "videoAssets.generationJob.create",
+    "videoAssets.generationJob.process",
+    "videoAssets.generationJob.reconcile",
+    "videoAssets.generationJob.resume",
+    "videoAssets.generationJob.cancel"
   ]);
   const browserMethods = Object.entries(methods)
     .filter(([name, definition]) => definition.scope === "operator.read" || browserWriteAllowlist.has(name))
@@ -1395,7 +2085,7 @@ function write(handler) {
 
 function tool(name, description, properties, handler, required = []) {
   const localizedDescription = localizedToolDescription(name, description);
-  return {
+  const definition = {
     name,
     description: localizedDescription,
     parameters: {
@@ -1404,20 +2094,27 @@ function tool(name, description, properties, handler, required = []) {
       properties,
       ...(required.length > 0 ? { required } : {})
     },
-    async execute(_toolCallId, args) {
+    async execute(toolCallId, args, signal, onUpdate, toolContext) {
+      const validation = validateToolInput({ name, parameters: definition.parameters, args });
+      if (!validation.ok) {
+        return toToolFailure(validation.error, validation.skipped);
+      }
       try {
-        const result = await handler(args ?? {});
+        // REN-02: the trusted identity comes from the host tool factory context, never from args.
+        const context = trustedContextForToolCall(toolContext);
+        const result = await handler(withTrustedContext(args ?? {}, context), { toolCallId, signal, onUpdate, toolContext, context });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (error) {
-        return { content: [{ type: "text", text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }] };
+        return toToolFailure(error);
       }
     }
   };
+  return definition;
 }
 
 function rawTool(name, description, properties, handler) {
   const localizedDescription = localizedToolDescription(name, description);
-  return {
+  const definition = {
     name,
     description: localizedDescription,
     parameters: {
@@ -1425,12 +2122,39 @@ function rawTool(name, description, properties, handler) {
       additionalProperties: false,
       properties
     },
-    async execute(_toolCallId, args) {
+    async execute(toolCallId, args, signal, onUpdate, toolContext) {
+      const validation = validateToolInput({ name, parameters: definition.parameters, args });
+      if (!validation.ok) {
+        return toToolFailure(validation.error, validation.skipped);
+      }
       try {
-        return await handler(args ?? {});
+        const context = trustedContextForToolCall(toolContext);
+        return await handler(withTrustedContext(args ?? {}, context), { toolCallId, signal, onUpdate, toolContext, context });
       } catch (error) {
-        return { content: [{ type: "text", text: `ERROR: ${error instanceof Error ? error.message : String(error)}` }] };
+        return toToolFailure(error);
       }
     }
+  };
+  return definition;
+}
+
+/**
+ * Tool failure shape.
+ * `content[0].text` keeps the historical `ERROR: <message>` prefix that existing callers
+ * and transcripts pattern-match on; the structured code/retryable detail rides along in
+ * `details` so a newer client can branch on it without a contract break.
+ */
+function toToolFailure(error, skipped = []) {
+  const { envelope, isStructured, hint } = toStructuredError(error);
+  const text = isStructured ? `ERROR: ${envelope.code}: ${envelope.message}` : `ERROR: ${envelope.message}`;
+  return {
+    content: [{ type: "text", text }],
+    details: {
+      ok: false,
+      error: envelope,
+      ...(hint ? { hint } : {}),
+      ...(skipped.length > 0 ? { validationSkipped: skipped } : {})
+    },
+    isError: true
   };
 }

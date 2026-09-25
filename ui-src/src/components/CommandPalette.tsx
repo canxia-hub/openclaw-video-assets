@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { create } from "zustand";
 import { rpc, type AssetSummary, type ProjectSummary } from "../lib/rpc";
+import { useFocusTrap } from "../lib/focus";
 
 interface PaletteState {
   open: boolean;
@@ -66,6 +67,10 @@ export default function CommandPalette() {
   const [debounced, setDebounced] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const paletteRef = useRef<HTMLDivElement | null>(null);
+  // 焦点进入对话框、Tab 圈定在对话框内、关闭后归还给打开它的元素；Escape 已在组件内处理，
+  // 但只处理了"关闭"，没有处理焦点去哪里。
+  useFocusTrap(paletteRef, open, () => setOpen(false));
   const navigate = useNavigate();
 
   // 全局热键 Cmd+K / Ctrl+K
@@ -200,6 +205,8 @@ export default function CommandPalette() {
       onClick={() => setOpen(false)}
     >
       <div
+        ref={paletteRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-label="全局搜索"

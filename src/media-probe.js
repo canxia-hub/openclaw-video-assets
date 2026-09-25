@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { FileWindow } from "./file-window.js";
+import { probeImageWithFfprobe, probeWithFfprobe, resolveMediaTools } from "./media-transcode.js";
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".tif", ".tiff", ".bmp", ".psd", ".psb", ".svg"]);
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"]);
@@ -41,6 +43,71 @@ const MIME_BY_EXTENSION = new Map([
   [".txt", "text/plain"],
   [".md", "text/markdown"]
 ]);
+
+/**
+ * Async probe: real ffprobe metadata when the toolchain is present, otherwise the handwritten
+ * parser with the degradation recorded explicitly.
+ *
+ * WHY BOTH PATHS EXIST
+ *   The handwritten parser below is a real (if narrow) parser: it reads PNG/JPEG/WebP headers, the
+ *   ISO-BMFF boxes for .mp4/.mov/.m4v, and the WAV RIFF header. It is kept as the documented
+ *   DEGRADED path for hosts without ffmpeg - and it is NOT silently equivalent, because it returns
+ *   empty metadata for .mp3/.flac/.webm/.mkv and friends (measured on the baseline: all 20 mp3
+ *   assets in the reference database carried NULL sample_rate/duration).
+ *
+ * Every result states which path produced it:
+ *   probed_by: "ffprobe"      + probe_degraded: false
+ *   probed_by: "handwritten"  + probe_degraded: true  + probe_degraded_reason: <why>
+ * so a caller - or an operator reading a row - can tell real metadata from a best-effort guess.
+ *
+ * It never throws: a probe failure degrades rather than blocking an ingest.
+ */
+export async function probeMediaAsync(filePath, options = {}) {
+  const base = probeMedia(filePath, options);
+  const handwritten = { ...base, probed_by: "handwritten", probe_degraded: true, probe_degraded_reason: "ffprobe-not-used" };
+
+  // Non-media families have nothing to probe.
+  if (base.media_type === "other" || base.media_type === "document" || base.media_type === "package") return handwritten;
+  // SVG is a vector document, not a raster frame: ffprobe would rasterize it and report a size that
+  // does not describe the file. The handwritten viewBox parser is the correct reader here.
+  if (base.extension === ".svg") return { ...handwritten, probe_degraded_reason: "vector-format" };
+
+  let tools;
+  try {
+    tools = options.tools ?? (await resolveMediaTools());
+  } catch (error) {
+    return { ...handwritten, probe_degraded_reason: "toolchain-probe-failed", probe_error: String(error?.message ?? error) };
+  }
+  if (!tools.available) return { ...handwritten, probe_degraded_reason: "ffmpeg-toolchain-unavailable" };
+
+  try {
+    const isImage = base.media_type === "image";
+    const probed = isImage
+      ? await probeImageWithFfprobe(filePath, { tools, timeoutMs: options.timeoutMs })
+      : await probeWithFfprobe(filePath, { tools, timeoutMs: options.timeoutMs });
+    if (!probed) return { ...handwritten, probe_degraded_reason: "ffprobe-found-no-usable-stream" };
+
+    // Extension-derived identity (extension / mime_type / declared family) is kept; measured facts
+    // (dimensions, duration, codec, sample rate, channels, frame rate) come from ffprobe. For an
+    // image, ffprobe reports a single-frame video stream, so the media type is restored from the
+    // extension-derived value rather than reported as "video".
+    return {
+      ...base,
+      ...probed,
+      media_type: isImage ? "image" : probed.media_type,
+      format_family: isImage ? base.format_family : probed.format_family,
+      container: probed.container ?? base.container,
+      probed_by: "ffprobe",
+      probe_degraded: false
+    };
+  } catch (error) {
+    return {
+      ...handwritten,
+      probe_degraded_reason: error?.code ?? "probe-failed",
+      probe_error: String(error?.message ?? error)
+    };
+  }
+}
 
 export function probeMedia(filePath, options = {}) {
   const namedPath = options.file_name || options.fileName || filePath;
@@ -101,30 +168,72 @@ function numericSvgAttribute(root, name) {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
 }
 
+/**
+ * Probe an ISO-BMFF video WITHOUT loading it.
+ *
+ * This used to be `probeIsoBmffVideo(fs.readFileSync(filePath))`: a Buffer the size of the whole file, to
+ * find a `moov` atom that is normally a few kilobytes. Measured on the 217 MiB acceptance fixture, that one
+ * line accounted for 216.8 MiB of buffer memory, which is the entire memory peak of the ingest path - the
+ * upload transport itself streams fine. FileWindow exposes the same reads the atom walker already uses, so
+ * the walker's logic is unchanged while memory is bounded by a small block cache.
+ */
 function probeVideo(filePath, extension) {
   if (![".mp4", ".mov", ".m4v"].includes(extension)) return {};
+  let window = null;
   try {
-    return probeIsoBmffVideo(fs.readFileSync(filePath));
+    window = new FileWindow(filePath);
+    return probeIsoBmffVideo(window);
   } catch {
     return {};
+  } finally {
+    window?.close();
   }
 }
 
+/**
+ * Probe a WAV WITHOUT loading it.
+ *
+ * The RIFF header and the `data` chunk size are all this needs and both are near the start of the file; a
+ * large WAV - exactly the case REN-06 is about - would otherwise be read in full for a few dozen bytes of
+ * metadata.
+ */
 function probeAudio(filePath, extension) {
   if (extension !== ".wav") return {};
+  let window = null;
   try {
-    const buffer = fs.readFileSync(filePath);
-    if (buffer.toString("ascii", 0, 4) !== "RIFF" || buffer.toString("ascii", 8, 12) !== "WAVE") return {};
-    const sample_rate = buffer.readUInt32LE(24);
-    const channels = buffer.readUInt16LE(22);
-    const byteRate = buffer.readUInt32LE(28);
-    const dataOffset = findChunk(buffer, "data");
-    const dataBytes = dataOffset >= 0 ? buffer.readUInt32LE(dataOffset + 4) : undefined;
+    window = new FileWindow(filePath);
+    if (window.length < 12) return {};
+    if (window.toString("ascii", 0, 4) !== "RIFF" || window.toString("ascii", 8, 12) !== "WAVE") return {};
+    const sample_rate = window.readUInt32LE(24);
+    const channels = window.readUInt16LE(22);
+    const byteRate = window.readUInt32LE(28);
+    const dataOffset = findChunkInWindow(window, "data");
+    const dataBytes = dataOffset >= 0 ? window.readUInt32LE(dataOffset + 4) : undefined;
     const duration_ms = dataBytes && byteRate ? Math.round((dataBytes / byteRate) * 1000) : undefined;
     return clean({ sample_rate, channels, duration_ms, codec: "pcm" });
   } catch {
     return {};
+  } finally {
+    window?.close();
   }
+}
+
+/**
+ * Chunk walk over a FileWindow: the same walk as `findChunk`, reading headers instead of a whole Buffer.
+ * Bounded by a chunk count so a malformed or adversarial file can not make this loop forever.
+ */
+function findChunkInWindow(window, chunkId, { maxChunks = 512 } = {}) {
+  let offset = 12;
+  for (let i = 0; i < maxChunks; i += 1) {
+    if (!window.has(offset, 8)) return -1;
+    const id = window.toString("ascii", offset, offset + 4);
+    const size = window.readUInt32LE(offset + 4);
+    if (id === chunkId) return offset;
+    if (!Number.isFinite(size) || size < 0) return -1;
+    // RIFF chunks are word-aligned: an odd size is followed by a pad byte.
+    offset += 8 + size + (size % 2);
+  }
+  return -1;
 }
 
 function pngDimensions(buffer) {

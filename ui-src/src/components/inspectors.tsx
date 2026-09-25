@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
   rpc,
-  mediaUrl,
   type AssetSummary,
   type AssetVersion,
   type CanvasEdge,
@@ -12,6 +11,7 @@ import {
 } from "../lib/rpc";
 import { useInspector } from "../lib/inspector";
 import { Badge, Field, fmtBytes, fmtTime, licenseBadge, riskBadge } from "./ui";
+import MediaPreview from "./MediaPreview";
 
 interface AssetDetail extends AssetSummary {
   versions?: AssetVersion[];
@@ -97,7 +97,6 @@ export function AssetInspector({ id }: { id: string }) {
   const lic = licenseBadge(a.license_status);
   const risk = riskBadge(a.risk_level);
   const defaultVer = a.versions?.find((v) => v.asset_version_id === a.default_version_id);
-  const isImage = a.media_type === "image";
 
   return (
     <div className="space-y-4">
@@ -106,13 +105,27 @@ export function AssetInspector({ id }: { id: string }) {
         <div className="mt-0.5 break-all font-mono text-[10px] text-text-faint">{a.asset_id}</div>
       </div>
 
-      {isImage && a.default_version_id && (
-        <img
-          src={mediaUrl.thumb(a.default_version_id)}
-          alt={a.title ?? ""}
-          className="w-full rounded-md border border-border-subtle object-cover"
-        />
-      )}
+      {/*
+        三种媒体共用同一个预览组件。旧实现只对图片渲染 <img>，视频与音频完全没有预览，而且图片
+        也没有加载中/失败态与下载入口 —— 对象缺失时只显示一个破图图标。预览的是默认版本，
+        用的也是该版本自己探测出来的字段。
+      */}
+      <MediaPreview
+        source={
+          a.default_version_id
+            ? {
+                versionId: a.default_version_id,
+                title: a.title,
+                mimeType: defaultVer?.mime_type ?? a.media_type ?? null,
+                extension: defaultVer?.extension ?? null,
+                sizeBytes: defaultVer?.size_bytes ?? null,
+                durationMs: defaultVer?.duration_ms ?? null,
+                width: defaultVer?.width ?? null,
+                height: defaultVer?.height ?? null
+              }
+            : null
+        }
+      />
 
       <div className="flex flex-wrap gap-1.5">
         <Badge label={lic.label} cls={lic.cls} />
@@ -163,7 +176,9 @@ export function AssetInspector({ id }: { id: string }) {
                 <div className="mt-0.5 text-text-faint">
                   {v.mime_type ?? "—"}
                   {v.width && v.height ? ` · ${v.width}×${v.height}` : ""}
-                  {v.duration_seconds ? ` · ${v.duration_seconds.toFixed(1)}s` : ""}
+                  {/* duration_ms 是服务端 asset_versions 的列名；旧代码读的 duration_seconds 服务端并不返回，
+                      所以这一行对每个视频/音频版本都渲染成空白。没有探测到时明确写"时长未知"。 */}
+                  {typeof v.duration_ms === "number" ? ` · ${(v.duration_ms / 1000).toFixed(1)}s` : " · 时长未知"}
                 </div>
               </div>
             ))}

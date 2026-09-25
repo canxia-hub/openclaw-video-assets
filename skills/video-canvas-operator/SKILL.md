@@ -70,6 +70,8 @@ Generated output writeback:
 - `video_canvas_insert_generated_asset`
 - `video_canvas_fill_generation_slot`
 - `video_canvas_dreamina_cli_generate_video`
+- `video_canvas_dreamina_cli_generate_image`
+- `video_canvas_dreamina_cli_upscale_image`
 
 Project spec:
 
@@ -206,15 +208,15 @@ For `image_to_video`, at least one image-like input should come from `main_refer
 
 ## Dreamina CLI Protocol
 
-Default low-cost video test:
+Default low-cost video test (2026-09-25 真机口径：seedance2.5 480p/4s=48 积分；工具面默认 `--poll 0` 异步提交 + 只读 query_result 收敛，不重提):
 
 ```json
 {
   "canvas_id": "<canvas_id>",
   "generation_type": "image_to_video",
-  "model_version": "seedance2.0fast",
-  "duration": 5,
-  "video_resolution": "720p",
+  "model_version": "seedance2.5",
+  "duration": 4,
+  "video_resolution": "480p",
   "ratio": "16:9",
   "execute": false,
   "accept_credit_spend": false,
@@ -223,6 +225,8 @@ Default low-cost video test:
   "writeback_canvas": false
 }
 ```
+
+Image generation (5.0Pro 走 CLI 原值大写 P；2k 16:9 = 8 积分，2026-09-25 真机): `video_canvas_dreamina_cli_generate_image`，`model_version="5.0Pro"`、`resolution_type="2k"`。Image upscale: `video_canvas_dreamina_cli_upscale_image`，`resolution_type` ∈ {2k,4k,8k}（2026-09-25 真机：2k=1 积分、4k=0 积分，本账号当日口径，不构成长期承诺）。
 
 Planning path:
 
@@ -241,14 +245,13 @@ Execution path:
 4. Use `output_dir` under the project output tree, not a temp directory.
 5. Keep generated output as `kind=working`, `license_status=unknown`, and `risk_level=unknown` unless cleared.
 
-Verified P4 real-generation pattern:
+Verified real-generation patterns:
 
-- `image_to_video`
-- `seedance2.0fast`
-- `720p`
-- `5s`
-- Result: 1280x720 MP4, about 5.09 seconds, 25 credits.
-- After download, verify with `ffprobe`, then write back with `video_canvas_fill_generation_slot`.
+- Video (2026-09-25 真机): `image_to_video` + `seedance2.5` + `480p` + `4s` → 854x480 MP4 4.064s h264+aac, 48 credits.
+- Image (2026-09-25 真机): `5.0Pro` + `2k` + `16:9` → 2560x1440 PNG, 8 credits.
+- Legacy (P4 历史): `image_to_video` + `seedance2.0fast` + `720p` + `5s` → 1280x720 MP4 ~5.09s, 25 credits.
+- After download, verify with `ffprobe`, then write back with `video_canvas_fill_generation_slot` or `video_canvas_insert_generated_asset`.
+- 授权口径（与插件 fail-closed 一致）：生成产物一律 `license_status=unknown`/`risk_level=unknown` 入库，未经人类或来源证据确认不得标 cleared；`draft_output` 卡片不参与下一次交接包的输入校验（代码事实：GENERATION_INPUT_SLOT_KEYS 排除 draft_output），未分类不会阻断下一次生成，但仍建议补 taxonomy 维持检索连续性。
 
 ## Dreamina Timeout And Recovery
 
@@ -258,18 +261,18 @@ Recovery procedure:
 
 1. Do not immediately resubmit.
 2. Check `dreamina.exe user_credit` for unexpected credit changes.
-3. Read Dreamina logs under `%USERPROFILE%\.dreamina_cli\logs\dreamina.log.<date_hour>` (or the equivalent log directory for your Dreamina CLI installation).
+3. Read Dreamina logs under `C:\Users\Administrator\.dreamina_cli\logs\dreamina.log.<date_hour>`.
 4. Extract `submit_id` from `[SubmitTask]`, `[QueryResult]`, or upload errors.
 5. Query with:
 
 ```powershell
-<dreamina-cli-path>\dreamina.exe query_result --submit_id=<submit_id>
+C:\Users\Administrator\bin\dreamina.exe query_result --submit_id=<submit_id>
 ```
 
 6. If successful, download with:
 
 ```powershell
-<dreamina-cli-path>\dreamina.exe query_result --submit_id=<submit_id> --download_dir <project-output-dir>
+C:\Users\Administrator\bin\dreamina.exe query_result --submit_id=<submit_id> --download_dir <project-output-dir>
 ```
 
 7. Run `ffprobe` before ingestion.

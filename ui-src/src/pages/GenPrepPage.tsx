@@ -78,6 +78,18 @@ export default function GenPrepPage() {
     <div className="p-6">
       <h1 className="mb-1 text-lg font-semibold text-text-primary">生成准备</h1>
       <p className="mb-4 text-sm text-text-secondary">选择画布与生成类型，查看参考槽位匹配、预检警告与结构化输入包。</p>
+      {/*
+        这里**不执行**生成。本页产出请求包/交接包（plan），真正的 provider 调用在执行层（REN-10），本包未实现。
+        写明这一点，是因为"生成"这个词很容易让人以为点一下就会出片。
+        但实现期次只留在内部注释里：产品文案不带包号，也不解释"本页不会以什么按钮暗示什么"——那是工程自述，
+        用户需要的是"这一页做什么、不做什么、要不要花钱"这三件事。
+      */}
+      <div
+        className="mb-4 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+        data-testid="genprep-execution-notice"
+      >
+        本页只准备生成请求：构建请求包与交接包，不启动生成、不消耗积分。生成执行尚未实现。
+      </div>
 
       {/* 选择条 */}
       <div className="mb-4 flex flex-wrap items-center gap-2">

@@ -1,20 +1,59 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
+import { buildLabel } from "../lib/version";
+import LiveRegion from "./LiveRegion";
+import { useFocusTrap } from "../lib/focus";
 import { useInspector } from "../lib/inspector";
 import { AssetInspector, EdgeInspector, ProjectInspector, ShapeInspector } from "./inspectors";
 import CommandPalette, { usePalette } from "./CommandPalette";
 
-const NAV_ITEMS = [
-  { to: "/dashboard", label: "仪表盘", icon: "◧" },
-  { to: "/projects", label: "项目", icon: "▣" },
-  { to: "/assets", label: "资产库", icon: "❑" },
-  { to: "/canvas", label: "画布", icon: "✦" },
-  { to: "/generate", label: "生成", icon: "◈" },
-  { to: "/staging", label: "暂存", icon: "⇪" },
-  { to: "/audit", label: "审计", icon: "☰" },
+type NavItem = { to: string; label: string; icon: string };
+
+/*
+ * Navigation is TWO lists on purpose (REN-07 gate 2).
+ *
+ * PRODUCT is the production path a user follows, in order: 项目总览 → 素材库 → 镜头画布 → 生成队列 → 审核交付.
+ * DIAGNOSTICS is operator material - staging ledgers, audit records, settings. It used to sit in the same list,
+ * which made internal state look like a product feature and implied the workbench is further along than it is.
+ *
+ * A destination that is built is linked; a destination that is NOT built still appears, because hiding it would
+ * leave the user wondering where the capability went, and shows an honest placeholder stating what exists. That
+ * is the point of gate 2's "未实现能力不伪装可用": the label is a promise, so the page behind it must keep it.
+ */
+const PRODUCT_NAV: NavItem[] = [
+  { to: "/dashboard", label: "项目总览", icon: "▣" },
+  { to: "/assets", label: "素材库", icon: "❑" },
+  { to: "/canvas", label: "镜头画布", icon: "✦" },
+  { to: "/generate", label: "生成准备", icon: "◈" },
+  { to: "/jobs", label: "生成队列", icon: "⇄" },
+  { to: "/review", label: "审核交付", icon: "◎" },
+];
+
+const DIAGNOSTIC_NAV: NavItem[] = [
+  { to: "/staging", label: "暂存台账", icon: "⇪" },
+  { to: "/audit", label: "审计记录", icon: "☰" },
+  { to: "/diagnostics", label: "诊断", icon: "◍" },
   { to: "/settings", label: "设置", icon: "⚙" },
 ];
+
+/* Shared renderer so the two groups cannot drift in styling. */
+function renderNavItem(item: NavItem) {
+  return (
+    <NavLink
+      key={item.to}
+      to={item.to}
+      className={({ isActive }) =>
+        `flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
+          isActive ? "bg-accent-dim text-accent" : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+        }`
+      }
+    >
+      <span className="w-4 text-center text-xs" aria-hidden="true">{item.icon}</span>
+      {item.label}
+    </NavLink>
+  );
+}
 
 const CRUMB_MAP: Record<string, string> = {
   dashboard: "仪表盘",
@@ -22,9 +61,12 @@ const CRUMB_MAP: Record<string, string> = {
   assets: "资产库",
   canvas: "画布",
   generate: "生成",
+  jobs: "生成队列",
   staging: "暂存",
   audit: "审计",
   settings: "设置",
+  diagnostics: "诊断",
+  review: "审核交付",
 };
 
 export default function AppShell() {
@@ -33,10 +75,13 @@ export default function AppShell() {
   const clearSelection = useInspector((s) => s.clear);
   const location = useLocation();
   const navigate = useNavigate();
+  const inspectorRef = useRef<HTMLElement | null>(null);
   const [navOpen, setNavOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(() =>
     typeof window === "undefined" || window.matchMedia("(min-width: 768px)").matches,
   );
+  // 抽屉是模态面：Escape 关闭，并在关闭后把焦点归还给打开它的按钮。
+  useFocusTrap(inspectorRef, inspectorOpen, () => setInspectorOpen(false));
 
   const segments = location.pathname.split("/").filter(Boolean);
   const crumbs = segments.map((s) => CRUMB_MAP[s] ?? s);
@@ -57,6 +102,8 @@ export default function AppShell() {
 
   return (
     <div className="flex h-full bg-bg-base">
+      {/* 全局唯一的 aria-live 区域：检索结果、上传进度等经 announce() 播报。 */}
+      <LiveRegion />
       <CommandPalette />
       {(navOpen || inspectorOpen) && (
         <button
@@ -82,25 +129,14 @@ export default function AppShell() {
           <button type="button" onClick={() => setNavOpen(false)} className="ml-auto text-xs text-text-faint md:hidden" aria-label="关闭导航">×</button>
         </div>
         <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
-          {NAV_ITEMS.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                `flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors ${
-                  isActive
-                    ? "bg-accent-dim text-accent"
-                    : "text-text-secondary hover:bg-bg-hover hover:text-text-primary"
-                }`
-              }
-            >
-              <span className="w-4 text-center text-xs">{item.icon}</span>
-              {item.label}
-            </NavLink>
-          ))}
+          {PRODUCT_NAV.map(renderNavItem)}
+          <div className="px-3 pb-1 pt-4 text-[10px] font-medium uppercase tracking-wider text-text-faint">
+            诊断面
+          </div>
+          {DIAGNOSTIC_NAV.map(renderNavItem)}
         </nav>
         <div className="border-t border-border-subtle p-3 text-[10px] leading-4 text-text-faint">
-          v1.5 · Workbench 修复版
+          {buildLabel}
         </div>
       </aside>
 
@@ -147,8 +183,14 @@ export default function AppShell() {
           <main key={location.pathname} className="animate-page-in min-w-0 flex-1 overflow-y-auto">
             <Outlet />
           </main>
+          {/* 抽屉在窄屏下覆盖整页，属于模态面：需要进入移焦、Tab 圈定、Esc 关闭与关闭后归还焦点。 */}
           {inspectorOpen && (
-            <aside className="fixed inset-y-0 right-0 z-40 w-[min(320px,100vw)] shrink-0 overflow-y-auto border-l border-border-subtle bg-bg-raise1 p-4 md:static md:w-[320px]" data-testid="inspector-panel">
+            <aside
+              ref={inspectorRef}
+              tabIndex={-1}
+              className="fixed inset-y-0 right-0 z-40 w-[min(320px,100vw)] shrink-0 overflow-y-auto border-l border-border-subtle bg-bg-raise1 p-4 md:static md:w-[320px]"
+              data-testid="inspector-panel"
+            >
               <div className="flex items-center justify-between">
                 <div className="text-xs font-medium tracking-wide text-text-faint">检查器</div>
                 <div className="flex items-center gap-2">

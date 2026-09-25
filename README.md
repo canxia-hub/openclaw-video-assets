@@ -2,7 +2,7 @@
 
 `openclaw-video-assets` 是一个面向视频生产流程的 OpenClaw 原生插件：它把「项目、素材、版本、实体、分类、画布、生成输入、生成输出、审片批注、返修卡片、音频/视频生成写回」收敛到同一个可审计的生产资产库中。
 
-当前发布版：**v1.4.1 / Workbench v1.4**
+当前发布版：**v1.5.0 / Workbench v1.5**（v1.5 明细见 CHANGELOG；下文工具清单以 `openclaw.plugin.json` contracts 为准）
 
 - 插件 ID：`video-assets`
 - 工作台路由：`/__openclaw__/video-assets/workbench/`

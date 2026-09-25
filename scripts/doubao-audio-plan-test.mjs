@@ -30,10 +30,12 @@ try {
   assert.equal(plan.source, "doubao_audio_plan");
   assert.equal(plan.status, "ready");
   assert.equal(plan.request.schema_version, "doubao_audio_request_v1");
-  assert.equal(plan.request.asset_policy.license_status, "cleared");
-  assert.equal(plan.request.asset_policy.risk_level, "low");
-  assert.equal(plan.validation.checks.license_status_on_success, "cleared");
-  assert.ok(plan.cost_policy.some((item) => item.includes("platform_review_status=passed") || item.includes("license_status=cleared")));
+  assert.equal(plan.request.asset_policy.license_status, "unknown");
+  assert.equal(plan.request.asset_policy.risk_level, "unknown");
+  assert.equal(plan.validation.checks.license_status_on_success, "unknown");
+  // 平台审核为内容审核，不构成版权授权依据；默认不得为 cleared（REN-09 父审第 1 项）
+  assert.ok(plan.cost_policy.some((item) => item.includes("不构成版权授权依据")));
+  assert.ok(!plan.cost_policy.some((item) => item.includes("license_status=cleared")));
   const payload = buildDoubaoAudioApiPayload(plan.request);
   assert.equal(payload.model, "seed-audio-1.0");
   assert.equal(payload.text_prompt, prompt);

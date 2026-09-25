@@ -23,6 +23,16 @@
 
   --color-success: #3fb950;
   --color-warning: #d29922;
+  /*
+   * `--color-warn` is an ALIAS, not a second palette entry.
+   *
+   * REN-07 audit finding 11: 24 utility usages (8 each of text-warn / border-warn / bg-warn) across 5 files
+   * referenced a token that was never defined, so every warning state rendered with no colour - governance
+   * panels, rights notices and preflight warnings were indistinguishable from plain text in the dark theme.
+   * Renaming 24 call sites risks missing one and reproducing the same silent failure; an alias cannot drift,
+   * because both spellings resolve to ONE value. The single source is --color-warning above.
+   */
+  --color-warn: var(--color-warning);
   --color-danger: #f85149;
   --color-info: #58a6ff;
   --color-restricted: #e8862e;     /* 授权受限（介于 warning/danger） */
