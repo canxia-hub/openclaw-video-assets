@@ -83,6 +83,16 @@ let toolSurfaceIdentity = null;
 // REN-09：schema 枚举由能力注册表派生（单次求值 + 冻结），工具定义处不再写第二份清单。
 const videoSchema = Object.freeze(schemaEnums({ kind: "video" }));
 const imageSchema = Object.freeze({ ...schemaEnums({ kind: "image" }), imageResolutionTypes: schemaEnums({ kind: "image" }).resolution_type });
+const KIND_VALUES = Object.freeze(["raw", "working"]);
+const LICENSE_STATUS_VALUES = Object.freeze(["unknown", "cleared", "restricted", "rejected"]);
+const RISK_LEVEL_VALUES = Object.freeze(["unknown", "low", "medium", "high"]);
+const VISIBILITY_VALUES = Object.freeze(["internal", "project", "public_summary"]);
+const TARGET_TYPE_VALUES = Object.freeze(["asset", "asset_version", "entity", "project_ref"]);
+const DERIVATIVE_TYPE_VALUES = Object.freeze(["thumbnail", "proxy", "transcode", "audio_proxy", "subtitle", "waveform", "contact_sheet", "metadata", "other"]);
+const GENERATION_TYPE_VALUES = Object.freeze(["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"]);
+const SLOT_STATUS_VALUES = Object.freeze(["empty", "ready", "generating", "filled", "blocked"]);
+const ANNOTATION_TYPE_VALUES = Object.freeze(["character_profile", "scene_concept", "costume_spec", "prop_function", "visual_continuity", "source_rights", "production_note", "review_note", "prompt_note", "other"]);
+const REVIEW_ANNOTATION_TYPE_VALUES = Object.freeze(["review_note", "prompt_note", "visual_continuity", "production_note", "other"]);
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = path.resolve(MODULE_DIR, "..", "openclaw.plugin.json");
 const UI_DIST_DIR = path.resolve(MODULE_DIR, "..", "ui-dist");
@@ -767,7 +777,7 @@ function doubaoAudioToolSchema({ includeCanvas }) {
     writeback_canvas: { type: "boolean" },
     output_title: { type: "string" },
     title: { type: "string" },
-    kind: { type: "string", enum: ["raw", "working"] },
+    kind: { type: "string", enum: KIND_VALUES },
     tags: { type: "array", items: { type: "string" } },
     voices: {
       type: "array",
@@ -871,8 +881,8 @@ function kieSunoToolSchema({ includeCanvas }) {
     mix_priority: { type: "string" },
     downstream_target: { type: "string" },
     review_notes: { type: "string" },
-    input_rights: { type: "string", enum: ["unknown", "cleared", "restricted", "rejected"] },
-    output_rights: { type: "string", enum: ["unknown", "cleared", "restricted", "rejected"] },
+    input_rights: { type: "string", enum: LICENSE_STATUS_VALUES },
+    output_rights: { type: "string", enum: LICENSE_STATUS_VALUES },
     speaker_or_voice_consent: { type: "string" },
     rights_notes: { type: "string" },
     backend: { type: "string", enum: ["mock", "api"] },
@@ -886,7 +896,7 @@ function kieSunoToolSchema({ includeCanvas }) {
     download_outputs: { type: "boolean" },
     ingest_outputs: { type: "boolean" },
     writeback_canvas: { type: "boolean" },
-    kind: { type: "string", enum: ["raw", "working"] },
+    kind: { type: "string", enum: KIND_VALUES },
     tags: { type: "array", items: { type: "string" } },
     classification: { type: "object", additionalProperties: true },
     project_ref: { type: "object", additionalProperties: true },
@@ -952,7 +962,7 @@ function registerTools(api) {
   }
   registerToolDefinition(api, tool("video_asset_ingest", "Import a local file into the video asset repository.", {
     file_path: { type: "string" },
-    kind: { type: "string", enum: ["raw", "working"] },
+    kind: { type: "string", enum: KIND_VALUES },
     title: { type: "string", minLength: 1, maxLength: 512 },
     description: { type: "string", maxLength: 65536 },
     tags: { type: "array", maxItems: 64, items: { type: "string", maxLength: 128 } },
@@ -965,7 +975,7 @@ function registerTools(api) {
         notes: { type: "string" }
       }
     }
-  }, (args) => service.ingestAsset(args)));
+  }, (args) => service.ingestAsset(args), ["file_path"]));
 
   registerToolDefinition(api, tool("video_asset_search", "Search video assets by text and basic filters.", {
     query: { type: "string" },
@@ -975,7 +985,7 @@ function registerTools(api) {
 
   registerToolDefinition(api, tool("video_asset_get", "Get an asset with versions and branches.", {
     asset_id: { type: "string" }
-  }, (args) => service.getAsset(args)));
+  }, (args) => service.getAsset(args), ["asset_id"]));
 
   registerToolDefinition(api, tool("video_asset_update_metadata", "Update asset title, description, and tags without changing media versions.", {
     asset_id: { type: "string" },
@@ -987,8 +997,8 @@ function registerTools(api) {
 
   registerToolDefinition(api, tool("video_asset_update_rights", "Update asset license/risk status and append source rights evidence.", {
     asset_id: { type: "string" },
-    license_status: { type: "string", enum: ["unknown", "cleared", "restricted", "rejected"] },
-    risk_level: { type: "string", enum: ["unknown", "low", "medium", "high"] },
+    license_status: { type: "string", enum: LICENSE_STATUS_VALUES },
+    risk_level: { type: "string", enum: RISK_LEVEL_VALUES },
     notes: { type: "string" },
     source: {
       type: "object",
@@ -1003,7 +1013,7 @@ function registerTools(api) {
         notes: { type: "string" }
       }
     }
-  }, (args) => service.updateAssetRights(args)));
+  }, (args) => service.updateAssetRights(args), ["asset_id"]));
 
   registerToolDefinition(api, tool("video_asset_create_version", "Create a new asset version. change_items is required.", {
     asset_id: { type: "string" },
@@ -1027,14 +1037,14 @@ function registerTools(api) {
     branch_id: { type: "string" },
     parent_version_id: { type: "string" },
     set_as_default: { type: "boolean" }
-  }, (args) => service.createVersion(args)));
+  }, (args) => service.createVersion(args), ["asset_id","file_path","change_items"]));
 
   registerToolDefinition(api, tool("video_asset_create_branch", "Create a branch from an asset version.", {
     asset_id: { type: "string" },
     base_version_id: { type: "string" },
     name: { type: "string" },
     description: { type: "string" }
-  }, (args) => service.createBranch(args)));
+  }, (args) => service.createBranch(args), ["asset_id","base_version_id","name"]));
 
   registerToolDefinition(api, tool("video_asset_save_copy", "Save a managed copy from an existing asset version.", {
     source_asset_id: { type: "string" },
@@ -1043,20 +1053,20 @@ function registerTools(api) {
     target_project_id: { type: "string" },
     title: { type: "string" },
     reason: { type: "string" }
-  }, (args) => service.saveCopy(args)));
+  }, (args) => service.saveCopy(args), ["source_asset_id","source_version_id","copy_type"]));
 
   registerToolDefinition(api, tool("video_asset_lineage", "Inspect asset lineage: branches, versions, incoming and outgoing relations.", {
     asset_id: { type: "string" }
-  }, (args) => service.lineage(args)));
+  }, (args) => service.lineage(args), ["asset_id"]));
 
   registerToolDefinition(api, tool("video_asset_register_derived_file", "Register a thumbnail, proxy, transcode, subtitle, or other derived file for an asset version.", {
     asset_id: { type: "string" },
     asset_version_id: { type: "string" },
     file_path: { type: "string" },
-    derivative_type: { type: "string", enum: ["thumbnail", "proxy", "transcode", "audio_proxy", "subtitle", "waveform", "contact_sheet", "metadata", "other"] },
+    derivative_type: { type: "string", enum: DERIVATIVE_TYPE_VALUES },
     profile: { type: "string" },
     metadata: { type: "object", additionalProperties: true }
-  }, (args) => service.registerDerivedFile(args)));
+  }, (args) => service.registerDerivedFile(args), ["asset_id","asset_version_id","file_path","derivative_type"]));
 
   registerToolDefinition(api, tool("video_asset_generate_derived_file", "Generate a thumbnail or proxy from an asset version and register it as a derived file.", {
     asset_id: { type: "string" },
@@ -1069,12 +1079,12 @@ function registerTools(api) {
     seek_seconds: { type: "number" },
     max_duration_seconds: { type: "number" },
     metadata: { type: "object", additionalProperties: true }
-  }, (args) => service.generateDerivedFile(args)));
+  }, (args) => service.generateDerivedFile(args), ["asset_version_id"]));
 
   registerToolDefinition(api, tool("video_asset_derived_files", "List registered derived files for an asset or asset version.", {
     asset_id: { type: "string" },
     asset_version_id: { type: "string" },
-    derivative_type: { type: "string", enum: ["thumbnail", "proxy", "transcode", "audio_proxy", "subtitle", "waveform", "contact_sheet", "metadata", "other"] },
+    derivative_type: { type: "string", enum: DERIVATIVE_TYPE_VALUES },
     include_inactive: { type: "boolean" }
   }, (args) => service.listDerivedFiles(args)));
 
@@ -1090,12 +1100,12 @@ function registerTools(api) {
     subtype: { type: "string" },
     confidence: { type: "string", enum: ["confirmed", "candidate", "inferred"] },
     source: { type: "string", enum: ["manual", "agent", "import", "migration"] }
-  }, (args) => service.classifyAsset(args)));
+  }, (args) => service.classifyAsset(args), ["asset_id","domain","type"]));
 
   registerToolDefinition(api, tool("video_asset_get_classification", "Get asset taxonomy classifications and entity links.", {
     asset_id: { type: "string" },
     asset_version_id: { type: "string" }
-  }, (args) => service.getAssetClassification(args)));
+  }, (args) => service.getAssetClassification(args), ["asset_id"]));
 
   registerToolDefinition(api, tool("video_asset_taxonomy_report", "Scan the asset library for missing taxonomy, entity links, and key annotations.", {
     include_archived: { type: "boolean" },
@@ -1110,7 +1120,7 @@ function registerTools(api) {
     description: { type: "string" },
     project_id: { type: "string" },
     status: { type: "string", enum: ["draft", "active", "locked", "archived"] }
-  }, (args) => service.createEntity(args)));
+  }, (args) => service.createEntity(args), ["entity_key","entity_type","canonical_name"]));
 
   registerToolDefinition(api, tool("video_entity_search", "Search production entities by key, name, alias, type, or project.", {
     query: { type: "string" },
@@ -1128,23 +1138,23 @@ function registerTools(api) {
     relation_type: { type: "string", enum: ["depicts", "costume_for", "prop_for", "scene_for", "style_for", "voice_for", "reference_for"] },
     confidence: { type: "string", enum: ["confirmed", "candidate", "inferred"] },
     notes: { type: "string" }
-  }, (args) => service.linkEntityAsset(args)));
+  }, (args) => service.linkEntityAsset(args), ["asset_id","relation_type"]));
 
   registerToolDefinition(api, tool("video_asset_annotate", "Add a structured annotation to an asset, asset version, entity, or project reference.", {
-    target_type: { type: "string", enum: ["asset", "asset_version", "entity", "project_ref"] },
+    target_type: { type: "string", enum: TARGET_TYPE_VALUES },
     target_id: { type: "string" },
-    annotation_type: { type: "string", enum: ["character_profile", "scene_concept", "costume_spec", "prop_function", "visual_continuity", "source_rights", "production_note", "review_note", "prompt_note", "other"] },
+    annotation_type: { type: "string", enum: ANNOTATION_TYPE_VALUES },
     title: { type: "string" },
     body: { type: "string" },
     structured: { type: "object", additionalProperties: true },
-    visibility: { type: "string", enum: ["internal", "project", "public_summary"] }
-  }, (args) => service.annotateAsset(args)));
+    visibility: { type: "string", enum: VISIBILITY_VALUES }
+  }, (args) => service.annotateAsset(args), ["target_type","target_id","annotation_type","title","body"]));
 
   registerToolDefinition(api, tool("video_asset_annotations", "List annotations for an asset, asset version, entity, or project reference.", {
-    target_type: { type: "string", enum: ["asset", "asset_version", "entity", "project_ref"] },
+    target_type: { type: "string", enum: TARGET_TYPE_VALUES },
     target_id: { type: "string" },
     include_archived: { type: "boolean" }
-  }, (args) => service.listAnnotations(args)));
+  }, (args) => service.listAnnotations(args), ["target_type","target_id"]));
 
   registerToolDefinition(api, tool("video_asset_update_annotation", "Update an existing annotation or change its status.", {
     annotation_id: { type: "string" },
@@ -1152,8 +1162,8 @@ function registerTools(api) {
     body: { type: "string" },
     structured: { type: "object", additionalProperties: true },
     status: { type: "string", enum: ["draft", "active", "superseded", "resolved", "archived"] },
-    visibility: { type: "string", enum: ["internal", "project", "public_summary"] }
-  }, (args) => service.updateAnnotation(args)));
+    visibility: { type: "string", enum: VISIBILITY_VALUES }
+  }, (args) => service.updateAnnotation(args), ["annotation_id"]));
 
   registerToolDefinition(api, tool("video_project_create", "Create a video project record.", {
     title: { type: "string" },
@@ -1162,7 +1172,7 @@ function registerTools(api) {
     aspect_ratio: { type: "string" },
     resolution: { type: "string" },
     fps: { type: "number" }
-  }, (args) => service.createProject(args)));
+  }, (args) => service.createProject(args), ["title"]));
 
   registerToolDefinition(api, tool("video_project_update_spec", "Update project output targets used by canvas generation handoff.", {
     project_id: { type: "string" },
@@ -1170,7 +1180,7 @@ function registerTools(api) {
     aspect_ratio: { type: "string" },
     resolution: { type: "string" },
     fps: { type: "number" }
-  }, (args) => service.updateProjectSpec(args)));
+  }, (args) => service.updateProjectSpec(args), ["project_id"]));
 
   registerToolDefinition(api, tool("video_project_add_asset_ref", "Add an asset version reference to a project.", {
     project_id: { type: "string" },
@@ -1196,27 +1206,27 @@ function registerTools(api) {
 
   registerToolDefinition(api, tool("video_project_remove_asset_ref", "Soft-remove a project asset reference.", {
     reference_id: { type: "string" }
-  }, (args) => service.removeProjectRef(args)));
+  }, (args) => service.removeProjectRef(args), ["reference_id"]));
 
   registerToolDefinition(api, tool("video_project_refs", "List project asset references.", {
     project_id: { type: "string" }
-  }, (args) => service.listProjectRefs(args)));
+  }, (args) => service.listProjectRefs(args), ["project_id"]));
 
   registerToolDefinition(api, tool("video_project_asset_report", "Generate a project asset dependency and risk report.", {
     project_id: { type: "string" }
-  }, (args) => service.projectReport(args)));
+  }, (args) => service.projectReport(args), ["project_id"]));
 
   registerToolDefinition(api, tool("video_project_continuity_report", "Check project taxonomy, entity-link, and annotation continuity risks.", {
     project_id: { type: "string" },
     stage: { type: "string", enum: ["research", "production", "review", "delivery"] }
-  }, (args) => service.projectContinuityReport(args)));
+  }, (args) => service.projectContinuityReport(args), ["project_id"]));
 
   registerToolDefinition(api, tool("video_canvas_create", "Create a project infinite canvas.", {
     project_id: { type: "string" },
     title: { type: "string" },
     viewport: { type: "object", additionalProperties: true },
     document: { type: "object", additionalProperties: true }
-  }, (args) => service.createCanvas(args)));
+  }, (args) => service.createCanvas(args), ["project_id"]));
 
   registerToolDefinition(api, tool("video_canvas_search", "Search project canvases.", {
     project_id: { type: "string" },
@@ -1236,7 +1246,7 @@ function registerTools(api) {
 
   registerToolDefinition(api, tool("video_canvas_get", "Get an infinite canvas with shapes and edges.", {
     canvas_id: { type: "string" }
-  }, (args) => service.getCanvas(args)));
+  }, (args) => service.getCanvas(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_save_snapshot", "Save a canvas viewport/document snapshot.", {
     canvas_id: { type: "string" },
@@ -1266,12 +1276,12 @@ function registerTools(api) {
     rotation: { type: "number" },
     z_index: { type: "number" },
     props: { type: "object", additionalProperties: true }
-  }, (args) => service.upsertCanvasShape(args)));
+  }, (args) => service.upsertCanvasShape(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_create_generation_slot", "Create a production generation slot with target size, ratio, duration, and required references.", {
     canvas_id: { type: "string" },
     slot: { type: "string", enum: ["main_reference", "character_reference", "scene_reference", "motion_reference", "style_reference", "video_clip", "audio", "subtitle", "project_config", "draft_output"] },
-    generation_type: { type: "string", enum: ["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"] },
+    generation_type: { type: "string", enum: GENERATION_TYPE_VALUES },
     target_width: { type: "number" },
     target_height: { type: "number" },
     target_aspect_ratio: { type: "string" },
@@ -1282,7 +1292,7 @@ function registerTools(api) {
       description: "生成前必须存在的输入槽 key，不是资产 ID 或画布卡片 ID。",
       items: { type: "string", enum: ["main_reference", "character_reference", "scene_reference", "motion_reference", "style_reference", "video_clip", "audio", "subtitle", "project_config"] }
     },
-    status: { type: "string", enum: ["empty", "ready", "generating", "filled", "blocked"] },
+    status: { type: "string", enum: SLOT_STATUS_VALUES },
     title: { type: "string" },
     x: { type: "number" },
     y: { type: "number" },
@@ -1293,7 +1303,7 @@ function registerTools(api) {
   registerToolDefinition(api, tool("video_canvas_update_generation_slot", "Update a production generation slot target spec or workflow state.", {
     shape_id: { type: "string" },
     slot: { type: "string", enum: ["main_reference", "character_reference", "scene_reference", "motion_reference", "style_reference", "video_clip", "audio", "subtitle", "project_config", "draft_output"] },
-    generation_type: { type: "string", enum: ["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"] },
+    generation_type: { type: "string", enum: GENERATION_TYPE_VALUES },
     target_width: { type: "number" },
     target_height: { type: "number" },
     target_aspect_ratio: { type: "string" },
@@ -1304,7 +1314,7 @@ function registerTools(api) {
       description: "生成前必须存在的输入槽 key，不是资产 ID 或画布卡片 ID。",
       items: { type: "string", enum: ["main_reference", "character_reference", "scene_reference", "motion_reference", "style_reference", "video_clip", "audio", "subtitle", "project_config"] }
     },
-    status: { type: "string", enum: ["empty", "ready", "generating", "filled", "blocked"] },
+    status: { type: "string", enum: SLOT_STATUS_VALUES },
     title: { type: "string" },
     x: { type: "number" },
     y: { type: "number" },
@@ -1314,7 +1324,7 @@ function registerTools(api) {
 
   registerToolDefinition(api, tool("video_canvas_delete_shape", "Remove a card from a canvas without deleting repository assets.", {
     shape_id: { type: "string" }
-  }, (args) => service.deleteCanvasShape(args)));
+  }, (args) => service.deleteCanvasShape(args), ["shape_id"]));
 
   registerToolDefinition(api, tool("video_canvas_link_shapes", "Create or update a relationship edge between two canvas shapes.", {
     canvas_id: { type: "string" },
@@ -1324,21 +1334,21 @@ function registerTools(api) {
     relation_type: { type: "string", enum: ["uses", "depends_on", "references", "derived_from", "revises", "replaces", "continues", "belongs_to", "appears_in", "blocks", "contains", "related_to"] },
     label: { type: "string" },
     props: { type: "object", additionalProperties: true }
-  }, (args) => service.linkCanvasShapes(args)));
+  }, (args) => service.linkCanvasShapes(args), ["canvas_id","source_shape_id","target_shape_id"]));
 
   registerToolDefinition(api, tool("video_canvas_unlink_shapes", "Delete a canvas relationship edge.", {
     edge_id: { type: "string" }
-  }, (args) => service.unlinkCanvasShapes(args)));
+  }, (args) => service.unlinkCanvasShapes(args), ["edge_id"]));
 
   registerToolDefinition(api, tool("video_canvas_agent_context", "Return Agent-readable canvas context, visible shapes, offscreen clusters, and lint issues.", {
     canvas_id: { type: "string" },
     viewport: { type: "object", additionalProperties: true }
-  }, (args) => service.canvasAgentContext(args)));
+  }, (args) => service.canvasAgentContext(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_widget_context", "Return native-widget-ready canvas context with selection and view state.", {
     canvas_id: { type: "string" },
     viewport: { type: "object", additionalProperties: true }
-  }, (args) => service.canvasWidgetContext(args)));
+  }, (args) => service.canvasWidgetContext(args), ["canvas_id"]));
 
   registerToolDefinition(api, rawTool("render_video_assets_canvas_widget", "Return a Cowart-style native widget render descriptor for the Video Assets infinite canvas.", {
     canvas_id: { type: "string" },
@@ -1353,31 +1363,31 @@ function registerTools(api) {
     selected_shape_ids: { type: "array", items: { type: "string" } },
     primary_shape_id: { type: "string" },
     source: { type: "string" }
-  }, (args) => service.saveCanvasSelection(args)));
+  }, (args) => service.saveCanvasSelection(args), ["canvas_id","selected_shape_ids"]));
 
   registerToolDefinition(api, tool("video_canvas_get_selection", "Get the current transient canvas widget selection.", {
     canvas_id: { type: "string" }
-  }, (args) => service.getCanvasSelection(args)));
+  }, (args) => service.getCanvasSelection(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_save_view_state", "Save transient canvas widget viewport state without creating an audit commit.", {
     canvas_id: { type: "string" },
     viewport: { type: "object", additionalProperties: true },
     source: { type: "string" }
-  }, (args) => service.saveCanvasViewState(args)));
+  }, (args) => service.saveCanvasViewState(args), ["canvas_id","viewport"]));
 
   registerToolDefinition(api, tool("video_canvas_get_view_state", "Get the current transient canvas widget viewport state.", {
     canvas_id: { type: "string" }
-  }, (args) => service.getCanvasViewState(args)));
+  }, (args) => service.getCanvasViewState(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_generation_package", "Build a generation-prep input package from a production canvas.", {
     canvas_id: { type: "string" },
-    generation_type: { type: "string", enum: ["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"] }
-  }, (args) => service.canvasGenerationPackage(args)));
+    generation_type: { type: "string", enum: GENERATION_TYPE_VALUES }
+  }, (args) => service.canvasGenerationPackage(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_generation_handoff", "Build an executable generation handoff package from a production canvas.", {
     canvas_id: { type: "string" },
-    generation_type: { type: "string", enum: ["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"] }
-  }, (args) => service.canvasGenerationHandoff(args)));
+    generation_type: { type: "string", enum: GENERATION_TYPE_VALUES }
+  }, (args) => service.canvasGenerationHandoff(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_export_annotation_brief", "Build a review brief from a canvas shape for annotation or revision planning.", {
     canvas_id: { type: "string" },
@@ -1387,9 +1397,9 @@ function registerTools(api) {
     severity: { type: "string" },
     requested_change: { type: "string" },
     screenshot_asset_version_id: { type: "string" },
-    annotation_type: { type: "string", enum: ["review_note", "prompt_note", "visual_continuity", "production_note", "other"] },
-    visibility: { type: "string", enum: ["internal", "project", "public_summary"] }
-  }, (args) => service.canvasReviewBrief(args)));
+    annotation_type: { type: "string", enum: REVIEW_ANNOTATION_TYPE_VALUES },
+    visibility: { type: "string", enum: VISIBILITY_VALUES }
+  }, (args) => service.canvasReviewBrief(args), ["canvas_id","shape_id"]));
 
   registerToolDefinition(api, tool("video_canvas_register_review_annotation", "Register a canvas review note on the selected asset, version, entity, or project reference.", {
     canvas_id: { type: "string" },
@@ -1399,10 +1409,10 @@ function registerTools(api) {
     severity: { type: "string" },
     requested_change: { type: "string" },
     screenshot_asset_version_id: { type: "string" },
-    annotation_type: { type: "string", enum: ["review_note", "prompt_note", "visual_continuity", "production_note", "other"] },
-    visibility: { type: "string", enum: ["internal", "project", "public_summary"] },
+    annotation_type: { type: "string", enum: REVIEW_ANNOTATION_TYPE_VALUES },
+    visibility: { type: "string", enum: VISIBILITY_VALUES },
     structured: { type: "object", additionalProperties: true }
-  }, (args) => service.registerCanvasReviewAnnotation(args)));
+  }, (args) => service.registerCanvasReviewAnnotation(args), ["canvas_id","shape_id","body"]));
 
   registerToolDefinition(api, tool("video_canvas_create_revision_card", "Create a canvas revision card from a review annotation or generated output lineage.", {
     canvas_id: { type: "string" },
@@ -1420,14 +1430,14 @@ function registerTools(api) {
     y: { type: "number" },
     width: { type: "number" },
     height: { type: "number" }
-  }, (args) => service.createCanvasRevisionCard(args)));
+  }, (args) => service.createCanvasRevisionCard(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_update_revision_card_status", "Update a canvas revision card workflow status without changing its source annotation or output lineage.", {
     shape_id: { type: "string" },
     status: { type: "string", enum: ["open", "in_progress", "resolved", "rejected"] },
     status_note: { type: "string" },
     title: { type: "string" }
-  }, (args) => service.updateCanvasRevisionCardStatus(args)));
+  }, (args) => service.updateCanvasRevisionCardStatus(args), ["shape_id"]));
 
   registerToolDefinition(api, tool("video_canvas_insert_generated_asset", "Ingest a generated file, add it to the project, and write it back beside a generation slot.", {
     canvas_id: { type: "string" },
@@ -1435,17 +1445,17 @@ function registerTools(api) {
     file_path: { type: "string" },
     title: { type: "string" },
     description: { type: "string" },
-    kind: { type: "string", enum: ["raw", "working"] },
+    kind: { type: "string", enum: KIND_VALUES },
     tags: { type: "array", items: { type: "string" } },
-    license_status: { type: "string", enum: ["unknown", "cleared", "restricted", "rejected"] },
-    risk_level: { type: "string", enum: ["unknown", "low", "medium", "high"] },
+    license_status: { type: "string", enum: LICENSE_STATUS_VALUES },
+    risk_level: { type: "string", enum: RISK_LEVEL_VALUES },
     source: { type: "object", additionalProperties: true },
     classification: { type: "object", additionalProperties: true },
     project_ref: { type: "object", additionalProperties: true },
     writeback: { type: "object", additionalProperties: true },
     idempotency_key: { type: "string", description: "可选幂等键；相同键复用既有生成写回。" },
-    slot_status: { type: "string", enum: ["empty", "ready", "generating", "filled", "blocked"] }
-  }, (args) => service.insertGeneratedAsset(args)));
+    slot_status: { type: "string", enum: SLOT_STATUS_VALUES }
+  }, (args) => service.insertGeneratedAsset(args), ["canvas_id","slot_shape_id","file_path"]));
 
   registerToolDefinition(api, tool("video_canvas_fill_generation_slot", "Fill a generation slot with a generated file using ingest-first asset writeback defaults.", {
     canvas_id: { type: "string" },
@@ -1453,18 +1463,18 @@ function registerTools(api) {
     file_path: { type: "string" },
     title: { type: "string" },
     description: { type: "string" },
-    kind: { type: "string", enum: ["raw", "working"] },
+    kind: { type: "string", enum: KIND_VALUES },
     tags: { type: "array", items: { type: "string" } },
-    license_status: { type: "string", enum: ["unknown", "cleared", "restricted", "rejected"] },
-    risk_level: { type: "string", enum: ["unknown", "low", "medium", "high"] },
+    license_status: { type: "string", enum: LICENSE_STATUS_VALUES },
+    risk_level: { type: "string", enum: RISK_LEVEL_VALUES },
     rights_notes: { type: "string" },
     source: { type: "object", additionalProperties: true },
     classification: { type: "object", additionalProperties: true },
     project_ref: { type: "object", additionalProperties: true },
     writeback: { type: "object", additionalProperties: true },
     idempotency_key: { type: "string", description: "可选幂等键；相同键复用既有生成写回。" },
-    slot_status: { type: "string", enum: ["empty", "ready", "generating", "filled", "blocked"] }
-  }, (args) => service.fillGenerationSlot(args)));
+    slot_status: { type: "string", enum: SLOT_STATUS_VALUES }
+  }, (args) => service.fillGenerationSlot(args), ["canvas_id","slot_shape_id","file_path"]));
 
   registerToolDefinition(api, tool("video_audio_doubao_plan", "Build a Doubao Audio 1.0 request package without executing generation.", doubaoAudioToolSchema({
     includeCanvas: false
@@ -1476,11 +1486,11 @@ function registerTools(api) {
 
   registerToolDefinition(api, tool("video_canvas_doubao_audio_plan", "Build a Doubao Audio 1.0 request package from a canvas audio generation slot.", doubaoAudioToolSchema({
     includeCanvas: true
-  }), (args) => service.canvasDoubaoAudioPlan(args)));
+  }), (args) => service.canvasDoubaoAudioPlan(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_doubao_audio_generate", "Run Doubao Audio 1.0 generation from a canvas audio slot and write outputs back to canvas.", doubaoAudioToolSchema({
     includeCanvas: true
-  }), (args) => service.canvasDoubaoAudioGenerate(args)));
+  }), (args) => service.canvasDoubaoAudioGenerate(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_audio_kie_suno_plan", "Build a KIE Suno API music request package without submitting a task.", kieSunoToolSchema({
     includeCanvas: false
@@ -1492,28 +1502,28 @@ function registerTools(api) {
 
   registerToolDefinition(api, tool("video_canvas_kie_suno_audio_plan", "Build a KIE Suno request package from a canvas audio generation slot.", kieSunoToolSchema({
     includeCanvas: true
-  }), (args) => service.canvasKieSunoPlan(args)));
+  }), (args) => service.canvasKieSunoPlan(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_kie_suno_audio_generate", "Run KIE Suno generation from a canvas audio slot and write outputs back to canvas.", kieSunoToolSchema({
     includeCanvas: true
-  }), (args) => service.canvasKieSunoGenerate(args)));
+  }), (args) => service.canvasKieSunoGenerate(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_dreamina_cli_plan", "Build a Dreamina CLI execution plan from a canvas handoff without consuming credits.", {
     canvas_id: { type: "string" },
-    generation_type: { type: "string", enum: ["image", "image_to_video", "text_to_video", "multimodal_to_video", "edit", "voice", "subtitle", "cover", "export"] },
+    generation_type: { type: "string", enum: GENERATION_TYPE_VALUES },
     model_version: { type: "string" },
-    resolution_type: { type: "string", enum: videoSchema.imageResolutionTypes },
+    resolution_type: { type: "string", enum: imageSchema.resolution_type },
     generate_num: { type: "number" },
     ratio: { type: "string" }
-  }, (args) => service.canvasDreaminaCliPlan(args)));
+  }, (args) => service.canvasDreaminaCliPlan(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_dreamina_cli_generate_video", `Run Dreamina CLI video generation from a canvas handoff with strict video model parameter validation. model_version enum is derived from the capability registry (src/capability-registry.js); legacy values stay accepted for backward compatibility while read-only history values are rejected for new requests.`, {
     canvas_id: { type: "string" },
     generation_type: { type: "string", enum: ["image_to_video", "text_to_video", "multimodal_to_video"] },
     prompt: { type: "string" },
-    model_version: { type: "string", enum: videoSchema.modelVersion },
+    model_version: { type: "string", enum: videoSchema.model_version },
     duration: { type: "number" },
-    video_resolution: { type: "string", enum: videoSchema.videoResolution },
+    video_resolution: { type: "string", enum: videoSchema.video_resolution },
     ratio: { type: "string", enum: imageSchema.ratio },
     poll: { type: "number" },
     session: { type: "number" },
@@ -1525,19 +1535,19 @@ function registerTools(api) {
     ingest_outputs: { type: "boolean" },
     writeback_canvas: { type: "boolean" },
     output_title: { type: "string" },
-    license_status: { type: "string", enum: ["unknown", "cleared", "restricted", "rejected"] },
-    risk_level: { type: "string", enum: ["unknown", "low", "medium", "high"] },
+    license_status: { type: "string", enum: LICENSE_STATUS_VALUES },
+    risk_level: { type: "string", enum: RISK_LEVEL_VALUES },
     timeout_ms: { type: "number" },
     actor_id: { type: "string" },
     actor_type: { type: "string" }
-  }, (args) => service.canvasDreaminaCliGenerateVideo(args)));
+  }, (args) => service.canvasDreaminaCliGenerateVideo(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_dreamina_cli_generate_image", "Run Dreamina CLI image generation from a canvas handoff with strict image model parameter validation. model_version enum is derived from the capability registry; 5.0Pro keeps the CLI's original spelling.", {
     canvas_id: { type: "string" },
     generation_type: { type: "string", enum: ["image", "cover", "edit"] },
     prompt: { type: "string" },
-    model_version: { type: "string", enum: imageSchema.modelVersion },
-    resolution_type: { type: "string", enum: imageSchema.resolutionType },
+    model_version: { type: "string", enum: imageSchema.model_version },
+    resolution_type: { type: "string", enum: imageSchema.resolution_type },
     ratio: { type: "string", enum: imageSchema.ratio },
     generate_num: { type: "number" },
     width: { type: "number" },
@@ -1551,17 +1561,17 @@ function registerTools(api) {
     ingest_outputs: { type: "boolean" },
     writeback_canvas: { type: "boolean" },
     output_title: { type: "string" },
-    license_status: { type: "string", enum: ["unknown", "cleared", "restricted", "rejected"] },
-    risk_level: { type: "string", enum: ["unknown", "low", "medium", "high"] },
+    license_status: { type: "string", enum: LICENSE_STATUS_VALUES },
+    risk_level: { type: "string", enum: RISK_LEVEL_VALUES },
     timeout_ms: { type: "number" },
     actor_id: { type: "string" },
     actor_type: { type: "string" }
-  }, (args) => service.canvasDreaminaCliGenerateImage(args)));
+  }, (args) => service.canvasDreaminaCliGenerateImage(args), ["canvas_id"]));
 
   registerToolDefinition(api, tool("video_canvas_dreamina_cli_upscale_image", "Run Dreamina CLI image upscale (2k/4k/8k) on a given asset version, optionally writing output back to canvas.", {
     asset_version_id: { type: "string" },
     canvas_id: { type: "string" },
-    resolution_type: { type: "string", enum: imageSchema.upscaleResolution },
+    resolution_type: { type: "string", enum: imageSchema.upscale_resolution },
     poll: { type: "number" },
     output_dir: { type: "string" },
     execute: { type: "boolean" },
@@ -1571,8 +1581,8 @@ function registerTools(api) {
     ingest_outputs: { type: "boolean" },
     writeback_canvas: { type: "boolean" },
     output_title: { type: "string" },
-    license_status: { type: "string", enum: ["unknown", "cleared", "restricted", "rejected"] },
-    risk_level: { type: "string", enum: ["unknown", "low", "medium", "high"] },
+    license_status: { type: "string", enum: LICENSE_STATUS_VALUES },
+    risk_level: { type: "string", enum: RISK_LEVEL_VALUES },
     timeout_ms: { type: "number" },
     actor_id: { type: "string" },
     actor_type: { type: "string" }
@@ -1580,7 +1590,7 @@ function registerTools(api) {
 
   registerToolDefinition(api, tool("video_canvas_lint", "Lint a canvas for missing bindings and production readiness warnings.", {
     canvas_id: { type: "string" }
-  }, (args) => service.lintCanvas(args)));
+  }, (args) => service.lintCanvas(args), ["canvas_id"]));
 }
 
 /**

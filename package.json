@@ -1,8 +1,15 @@
 {
-  "name": "@openclaw-lab/video-assets-plugin",
-  "version": "1.5.0",
+  "name": "@openclaw-lab/video-asset-plugin",
+  "version": "0.2.0",
   "type": "module",
+  "private": true,
   "description": "面向视频生产的项目资产库、制作画布与生成写回插件。",
+  "files": [
+    "src/",
+    "ui-dist/",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
   "openclaw": {
     "extensions": [
       "./src/index.js"
@@ -16,8 +23,6 @@
     }
   },
   "scripts": {
-    "build:ui": "npm --prefix ui-src ci --no-audit --no-fund && npm --prefix ui-src run build",
-    "prepack": "npm run build:ui",
     "check:syntax": "node --check src/index.js && node --check src/gateway-rpc.js && node --check src/service.js && node --check src/generation-jobs.js && node --check src/storage.js && node --check src/media-probe.js && node --check src/schema.js && node --check src/security.js && node --check src/doubao-audio-adapter.js && node --check src/kie-suno-adapter.js && node --check src/sdk-compat.js && node --check src/dreamina-cli-job-adapter.js && node --check src/sop-v2-media.js && node --check src/sop-v2-fixture.js && node --check src/sop-v2-qc.js && node --check src/sop-v2-orchestrator.js",
     "check:preflight": "node scripts/plugin-preflight.mjs",
     "check:gateway-rpc": "node scripts/gateway-rpc-contract-test.mjs",
@@ -83,6 +88,7 @@
     "check:ren11-tool-poll": "node scripts/ren11-tool-poll-convergence-test.mjs",
     "check:generation-job-slot-column": "node scripts/generation-job-slot-column-test.mjs",
     "check:ren11-fixture": "node scripts/ren11-fixture-qc-smoke.mjs",
+    "check:generation-job-recovery-reentry": "node scripts/generation-job-recovery-reentry-test.mjs",
     "check:ren11-sop-v2-e2e": "node scripts/ren11-sop-v2-e2e-test.mjs",
     "check:ren11-provider-adapter": "node scripts/ren11-provider-adapter-contract-test.mjs",
     "check:ren11-sop-v2-crash-resume": "node scripts/ren11-sop-v2-crash-resume-test.mjs",
@@ -95,19 +101,5 @@
   },
   "engines": {
     "node": ">=22"
-  },
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/canxia-hub/openclaw-video-assets.git"
-  },
-  "files": [
-    "openclaw.plugin.json",
-    "src",
-    "scripts",
-    "ui-dist",
-    "README.md",
-    "CHANGELOG.md",
-    "LICENSE"
-  ]
+  }
 }

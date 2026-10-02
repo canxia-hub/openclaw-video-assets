@@ -34,7 +34,7 @@ export const HOST_CONTRACT = Object.freeze({
   pluginApiRange: ">=2026.3.24-beta.2",
   minHostVersion: ">=2026.3.24-beta.2",
   /** Versions with direct runtime evidence in this work package. */
-  verifiedHosts: Object.freeze(["2026.9.3"]),
+  verifiedHosts: Object.freeze(["2026.9.3", "2026.9.7"]),
   /** Range syntax accepted by the host: whitespace-separated comparators ANDed; "||" is unsupported. */
   rangeSyntax: "and-only"
 });

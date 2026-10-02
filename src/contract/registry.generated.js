@@ -4299,6 +4299,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects which read is performed; all other fields are typed and the applicable subset is documented per mode"
       }
     },
+    "required": ["asset_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_get"
   },
@@ -4361,6 +4362,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects which read is performed; all other fields are typed and the applicable subset is documented per mode"
       }
     },
+    "required": ["asset_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_lineage"
   },
@@ -4436,6 +4438,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects which read is performed; all other fields are typed and the applicable subset is documented per mode"
       }
     },
+    "required": ["asset_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_get_classification"
   },
@@ -4474,6 +4477,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects which read is performed; all other fields are typed and the applicable subset is documented per mode"
       }
     },
+    "required": ["target_type","target_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_annotations"
   },
@@ -4643,6 +4647,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the write"
       }
     },
+    "required": ["asset_id","file_path","change_items"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_create_version"
   },
@@ -4678,6 +4683,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the write"
       }
     },
+    "required": ["asset_id","base_version_id","name"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_create_branch"
   },
@@ -4725,6 +4731,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the write"
       }
     },
+    "required": ["source_asset_id","source_version_id","copy_type"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_save_copy"
   },
@@ -4778,6 +4785,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the write"
       }
     },
+    "required": ["asset_id","asset_version_id","file_path","derivative_type"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_register_derived_file"
   },
@@ -4848,6 +4856,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the write"
       }
     },
+    "required": ["asset_version_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_generate_derived_file"
   },
@@ -4916,6 +4925,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the write"
       }
     },
+    "required": ["target_type","target_id","annotation_type","title","body"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_annotate"
   },
@@ -4970,6 +4980,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the write"
       }
     },
+    "required": ["annotation_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_update_annotation"
   },
@@ -5021,6 +5032,7 @@ export const NARROW_SCHEMAS = {
         }
       }
     },
+    "required": ["file_path"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_ingest"
   },
@@ -5074,6 +5086,7 @@ export const NARROW_SCHEMAS = {
         ]
       }
     },
+    "required": ["asset_id","domain","type"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_classify"
   },
@@ -5134,6 +5147,7 @@ export const NARROW_SCHEMAS = {
         }
       }
     },
+    "required": ["asset_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_asset_update_rights"
   },
@@ -5175,6 +5189,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the project write"
       }
     },
+    "required": ["title"],
     "additionalProperties": false,
     "x-legacy-tool": "video_project_create"
   },
@@ -5213,6 +5228,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the project write"
       }
     },
+    "required": ["project_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_project_update_spec"
   },
@@ -5341,6 +5357,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the project write"
       }
     },
+    "required": ["reference_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_project_remove_asset_ref"
   },
@@ -5362,6 +5379,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the project read"
       }
     },
+    "required": ["project_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_project_refs"
   },
@@ -5383,6 +5401,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the project read"
       }
     },
+    "required": ["project_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_project_asset_report"
   },
@@ -5413,6 +5432,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the project read"
       }
     },
+    "required": ["project_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_project_continuity_report"
   },
@@ -5744,6 +5764,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the slot write"
       }
     },
+    "required": ["canvas_id","slot_shape_id","file_path"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_fill_generation_slot"
   },
@@ -5779,6 +5800,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the preparation read"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_generation_package"
   },
@@ -5814,6 +5836,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the preparation read"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_generation_handoff"
   },
@@ -5835,6 +5858,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the preparation read"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_lint"
   },
@@ -6666,6 +6690,7 @@ export const NARROW_SCHEMAS = {
         "description": "direct request, or canvas-slot driven (replaces the separate video_canvas_* wrappers)"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_doubao_audio_plan"
   },
@@ -6947,6 +6972,7 @@ export const NARROW_SCHEMAS = {
         "description": "direct request, or canvas-slot driven (replaces the separate video_canvas_* wrappers)"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_doubao_audio_generate"
   },
@@ -7697,6 +7723,7 @@ export const NARROW_SCHEMAS = {
         "description": "direct request, or canvas-slot driven (replaces the separate video_canvas_* wrappers)"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_kie_suno_audio_plan"
   },
@@ -7951,6 +7978,7 @@ export const NARROW_SCHEMAS = {
         "description": "direct request, or canvas-slot driven (replaces the separate video_canvas_* wrappers)"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_kie_suno_audio_generate"
   },
@@ -8031,6 +8059,7 @@ export const NARROW_SCHEMAS = {
         "description": "direct request, or canvas-slot driven (replaces the separate video_canvas_* wrappers)"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_dreamina_cli_plan"
   },
@@ -8189,6 +8218,7 @@ export const NARROW_SCHEMAS = {
         "description": "direct request, or canvas-slot driven (replaces the separate video_canvas_* wrappers)"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_dreamina_cli_generate_video"
   },
@@ -8347,6 +8377,7 @@ export const NARROW_SCHEMAS = {
         "description": "direct request, or canvas-slot driven (replaces the separate video_canvas_* wrappers)"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_dreamina_cli_generate_image"
   },
@@ -8516,6 +8547,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the entity write"
       }
     },
+    "required": ["entity_key","entity_type","canonical_name"],
     "additionalProperties": false,
     "x-legacy-tool": "video_entity_create"
   },
@@ -8568,6 +8600,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the entity write"
       }
     },
+    "required": ["asset_id","relation_type"],
     "additionalProperties": false,
     "x-legacy-tool": "video_entity_link_asset"
   },
@@ -8620,6 +8653,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas read"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_get"
   },
@@ -8685,6 +8719,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas read"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_agent_context"
   },
@@ -8713,6 +8748,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas read"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_widget_context"
   },
@@ -8737,6 +8773,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas read"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_get_selection"
   },
@@ -8761,6 +8798,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas read"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_get_view_state"
   },
@@ -8800,6 +8838,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas write"
       }
     },
+    "required": ["project_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_create"
   },
@@ -8882,6 +8921,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas write"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_upsert_shape"
   },
@@ -8910,6 +8950,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas write"
       }
     },
+    "required": ["shape_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_delete_shape"
   },
@@ -8971,6 +9012,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas write"
       }
     },
+    "required": ["canvas_id","source_shape_id","target_shape_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_link_shapes"
   },
@@ -8999,6 +9041,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas write"
       }
     },
+    "required": ["edge_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_unlink_shapes"
   },
@@ -9097,6 +9140,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas write"
       }
     },
+    "required": ["canvas_id","selected_shape_ids"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_save_selection"
   },
@@ -9132,6 +9176,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas write"
       }
     },
+    "required": ["canvas_id","viewport"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_save_view_state"
   },
@@ -9277,6 +9322,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the canvas write"
       }
     },
+    "required": ["canvas_id","slot_shape_id","file_path"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_insert_generated_asset"
   },
@@ -9339,6 +9385,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the review write"
       }
     },
+    "required": ["canvas_id","shape_id","body"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_register_review_annotation"
   },
@@ -9403,6 +9450,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the review write"
       }
     },
+    "required": ["canvas_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_create_revision_card"
   },
@@ -9440,6 +9488,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the review write"
       }
     },
+    "required": ["shape_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_update_revision_card_status"
   },
@@ -9498,6 +9547,7 @@ export const NARROW_SCHEMAS = {
         "description": "selects the review write"
       }
     },
+    "required": ["canvas_id","shape_id"],
     "additionalProperties": false,
     "x-legacy-tool": "video_canvas_export_annotation_brief"
   },

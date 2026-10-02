@@ -1,743 +1,147 @@
-# OpenClaw Video Assets
+# Video Assets Plugin
 
-`openclaw-video-assets` 是一个面向视频生产流程的 OpenClaw 原生插件：它把「项目、素材、版本、实体、分类、画布、生成输入、生成输出、审片批注、返修卡片、音频/视频生成写回」收敛到同一个可审计的生产资产库中。
+状态：已接入 OpenClaw Gateway，用于视频项目资产、制作画布、生成写回与音频/音乐资产管理。
 
-当前发布版：**v1.5.0 / Workbench v1.5**（v1.5 明细见 CHANGELOG；下文工具清单以 `openclaw.plugin.json` contracts 为准）
+## 当前已实现
 
-- 插件 ID：`video-assets`
-- 工作台路由：`/__openclaw__/video-assets/workbench/`
-- 后端入口：`src/index.js`
-- 前端产物：`ui-dist/`
-- 前端源码：`ui-src/`
-- 附属 OpenClaw 技能：`skills/`
-- 原始实现与新版工作台：湍
-- 发布整理与公开仓库维护：小千 / canxia-hub
+- Native OpenClaw plugin manifest：`openclaw.plugin.json`
+- Plugin entry：`src/index.js`
+- SQLite schema：`src/schema.js`
+- Repository service：`src/service.js`
+- Content-addressed object store：`src/storage.js`
+- Media probe by extension/MIME plus ffprobe metadata：`src/media-probe.js`
+- Agent tools：
+  - `video_asset_ingest`
+  - `video_asset_search`
+  - `video_asset_get`
+  - `video_asset_update_metadata`
+  - `video_asset_create_version`
+  - `video_asset_create_branch`
+  - `video_asset_save_copy`
+  - `video_asset_lineage`
+  - `video_project_create`
+  - `video_project_add_asset_ref`
+  - `video_project_refs`
+  - `video_project_asset_report`
+  - `video_audio_doubao_plan`
+  - `video_audio_doubao_generate`
+  - `video_audio_kie_suno_plan`
+  - `video_audio_kie_suno_generate`
+  - `video_canvas_doubao_audio_plan`
+  - `video_canvas_doubao_audio_generate`
+  - `video_canvas_kie_suno_audio_plan`
+  - `video_canvas_kie_suno_audio_generate`
+- Gateway RPC namespace draft：`videoAssets.*`
 
----
+## 即梦（Dreamina）CLI 生成路由（2026-09-20 更新）
 
-## 目录
+画布可直驱即梦 CLI，无需「CLI 直调 + 插件回填」绕行。
 
-- [它能解决什么问题](#它能解决什么问题)
-- [核心能力](#核心能力)
-- [Workbench v1.4 页面](#workbench-v14-页面)
-- [架构与数据模型](#架构与数据模型)
-- [安装](#安装)
-- [配置](#配置)
-- [首次启动与安全初始化](#首次启动与安全初始化)
-- [附属技能](#附属技能)
-- [Agent 工具清单](#agent-工具清单)
-- [RPC 面](#rpc-面)
-- [生成链路治理规则](#生成链路治理规则)
-- [本地验证](#本地验证)
-- [前端开发](#前端开发)
-- [目录结构](#目录结构)
-- [安全边界](#安全边界)
-- [当前限制](#当前限制)
-- [发布说明](#发布说明)
+生成工具：
 
----
+| 工具 | 用途 |
+|---|---|
+| `video_canvas_dreamina_cli_plan` | 从画布交接包构建命令计划，不消耗积分 |
+| `video_canvas_dreamina_cli_generate_video` | 图生/文生/多模态视频；支持 `seedance2.5`（480p/720p/1080p、4-30s）与 `seedance2.0` 家族（`seedance2.0_vip` 额外支持 4k） |
+| `video_canvas_dreamina_cli_generate_image` | 图像生成/封面/编辑；支持 `5.0Pro`（resolution_type 1.5k/2k/4k）等全部 CLI 图像模型 |
+| `video_canvas_dreamina_cli_upscale_image` | 图像放大（`image_upscale`，resolution_type 2k/4k/8k；入参 `asset_version_id` 必填） |
 
-## 它能解决什么问题
+要点：
 
-多媒体项目最常见的失控点不是“文件不够多”，而是：
+- **模型能力收敛为单一规格表**（`src/service.js` 的 `DREAMINA_VIDEO_MODEL_SPECS` / `DREAMINA_IMAGE_MODEL_SPECS`），工具 schema 的 enum 由表派生。新增/调整模型只改表，**不要**在 enum 与校验集合两处各写一份。
+- **上传路径必须带正确扩展名**：对象库文件一律以 `.blob` 结尾，而即梦 CLI 按扩展名判定上传类型；插件已内建 `materializeDreaminaUploadFile()` 在上传前物化为带正确扩展名的缓存文件（mime 优先、magic bytes 回退）。上传阶段失败不计费。
+- **真实执行需显式同意**：`execute=true` 且 `accept_credit_spend=true`；默认先跑 `user_credit` 预检，返回中带 `credit_before` / `credit_after`。
+- **写回产出**：生成结果会作为 `draft_output` 卡片写回画布。该卡片**不参与**下一次交接包的**输入**校验（`GENERATION_INPUT_SLOT_KEYS` 已显式排除 `draft_output`），因此未做 taxonomy 分类**不会**阻断下一次生成；仍建议用 `video_asset_classify`（`delivery / generated_output / <生成型>`）补分类，以维持素材检索与分类连续性。
+- 模型白名单以**后端**为准：CLI 本地不做 model 白名单校验，`--help` 声明与后端受理范围双向不一致；核验手法见技能 `dreamina-cli-official-guide`。
 
-- 同一个角色/场景/道具的素材散落在多个目录，无法判断哪个版本可用。
-- 生成输出只有文件，没有来源、授权、风险、谱系和审片记录。
-- 画布只是视觉草稿，不能变成可执行的生成输入包。
-- 下游 Agent 拿到的是裸文件路径，不知道素材身份、约束、授权状态和禁用场景。
-- 审片意见、返修动作、替换版本之间没有结构化关系。
+## 音乐生成与 Suno/KIE 路由
 
-这个插件把上述信息变成一套可查询、可审计、可由 Agent 操作的生产资产系统。
+所有 Suno/KIE 音乐、歌曲、BGM、器乐、角色歌、歌词成曲和视频配乐产出，默认通过本插件管理，不直接把远程 URL 或裸文件交付给下游。
 
----
+优先顺序：
 
-## 核心能力
+1. 有 canvas / generation slot 时，先用 `video_canvas_kie_suno_audio_plan`，再用 `video_canvas_kie_suno_audio_generate`。
+2. 有项目上下文但不需要画布槽位时，先用 `video_audio_kie_suno_plan`，再用 `video_audio_kie_suno_generate`。
+3. 真实提交必须显式传 `execute=true`、`accept_cost=true`、`backend=api`；生产验证默认传 `poll_result=true`、`download_outputs=true`、`ingest_outputs=true`。
+4. KIE/Suno 输出默认 `license_status=unknown`、`risk_level=unknown`，公开发布或商用前必须人工复核授权与条款。
+5. 下载后必须探测音频流、时长和文件可读性；封面图、缩略图或非音频误入库时，只做软拒绝/高风险标记，不物理删除审计文件。
 
-### 1. 项目与素材仓库
+### 音频密钥解析优先级（2026-09-13 起）
 
-- 创建视频项目并维护项目规格：分辨率、宽高比、帧率、目标平台。
-- 导入本地素材为受管资产。
-- 使用内容寻址对象存储保存源文件。
-- 支持资产版本、分支、受管副本、上下游谱系。
-- 支持项目素材引用，并可区分 `pinned`、`follow_latest`、`candidate` 等引用模式。
-- 支持项目资产风险报告与连续性报告。
+KIE / 豆包音频适配器的 API Key 按以下顺序解析（两者一致）：
 
-### 2. 分类、实体与批注
+1. **插件配置（推荐）**：`plugins.entries.video-assets.config.audio.kie.apiKey` / `audio.doubao.apiKey`。值可直接写 SecretRef（如 `{"source":"store","provider":"default","id":"KIE_API_KEY"}`），网关启动时物化为字符串注入插件，不再依赖人工设置 Windows 环境变量。
+2. **环境变量回退**：`KIE_API_KEY` / `VOLCENGINE_DOUBAO_AUDIO_API_KEY`（保持旧行为兼容）。
+3. **两者皆无**：plan 返回明确 blocker（如 `KIE_API_KEY is required for backend=api`），不会静默失败。
 
-- 使用受控分类体系标注资产：角色、场景、服装、道具、音频、参考、提示词、文档、交付物等。
-- 建立角色、场景、服装、道具等生产实体。
-- 将资产或资产版本关联到实体。
-- 支持结构化批注：角色设定、场景概念、服装规格、道具功能、视觉连续性、来源权利、制作备注、审片意见等。
-- 可扫描缺失分类、缺失实体关联和关键批注缺口。
+说明：
 
-### 3. 派生文件与完整性
+- 未物化的 SecretRef 对象（如网关版本不支持）会被忽略并回退环境变量，不会误用。
+- 清单已声明 `configContracts.secretInputs`（`audio.kie.apiKey` / `audio.doubao.apiKey`），Settings 界面自动脱敏，`openclaw secrets` 审计覆盖这两个路径。
+- 输出下载（`downloadFile`）走公开 URL，无需密钥，行为不变；工具返回结构保持一致，仅 `validation.checks.auth` 在密钥来自配置时标注实际来源。
+- 验证脚本：`npm run check:audio-key-resolution`。
+- ⚠️ 引用不存在的 store 条目可能导致网关启动失败；配置前先 `secrets list` 确认 id 存在。
+- ⚠️ **configSchema 必须同时接受字符串与 SecretRef 对象**（`anyOf: [{type:string}, {source/provider/id 对象}]`）：声明 `secretInputs` 后，网关用 configSchema 校验的是**物化前的源配置**，SecretRef 此时仍是对象。若 schema 只写 `"type": "string"`，含引用的 openclaw.json 会在**启动校验阶段直接拒绝、网关重启失败**（2026-09-14 实测踩坑，由主线程修复；插件重装/更新时务必保留该 anyOf 写法，参考 `C:\Users\Administrator\openclaw-repair-20260914\repair-notes.md`）。
 
-- 登记缩略图、代理文件、转码、字幕、波形、contact sheet、元数据等派生文件。
-- 可通过本地 `ffmpeg` 生成缩略图或代理文件。
-- 支持仓库完整性扫描：元数据、源对象、派生文件和项目引用。
+## 云端对象存储接入（rclone 挂载，厂商中立）
 
-### 4. 制作画布
+当本机磁盘不足时，可以把占空间的对象库整体迁移到任意 S3 兼容对象存储（腾讯云 COS、阿里 OSS、AWS S3、Cloudflare R2、MinIO 等），插件无需改造：数据库只记录路径，文件经 `fs.createReadStream` 按路径流式读取，路径能通即可。
 
-- 每个项目可拥有制作画布。
-- 画布卡片可绑定项目引用、资产、资产版本、实体、备注、阶段分区。
-- 支持阶段结构：Characters、Scenes、Props、References、Audio、Shots、Delivery。
-- 支持生成槽位：主参考、角色参考、场景参考、动作参考、风格参考、视频片段、音频、字幕、项目配置、草稿输出。
-- 支持卡片关系：contains、references、depends_on、appears_in、uses、derived_from、revises、replaces、continues 等。
-- 支持画布 lint、生成准备包、生成交接包、Dreamina CLI 命令计划。
+**分层原则（必须遵守）**
 
-### 5. 生成输出写回
+- `asset-repo/objects/`（SHA-256 内容寻址 blob，体积大头）→ 放云端挂载盘。
+- `metadata/video-assets.sqlite`、`cache/`、`project-repo/` → 必须留在本地磁盘。SQLite 放在网络/挂载盘上有锁损坏风险；缓存高频读写，放本地保证 UI 响应。
 
-- 生成结果先入库为资产，再写回画布。
-- 自动维护输出卡片、谱系关系和槽位状态。
-- 支持 Dreamina / Seedance 视频生成链路。
-- 支持豆包音频生成链路。
-- 支持 KIE Suno 音乐/歌曲生成链路。
-- 真实生成必须显式确认执行与成本；默认计划模式不消耗成本。
+**接入步骤（以 Windows + rclone 为例）**
 
-### 6. 审片与返修
+1. 安装 WinFsp（v2.1+）与 rclone；`rclone config create <name> s3 provider=<厂商> endpoint=<endpoint> ...` 配好 remote，`rclone lsd <name>:<bucket>` 验证权限。
+2. 磁盘模式挂载：`rclone mount <name>:<bucket> V: --vfs-cache-mode full --vfs-cache-max-size 2G --vfs-cache-max-age 1h --vfs-write-back 5s`。
+   ⚠️ **不要加 `--network-mode`**：网络盘不能做目录联接（Junction）的目标，访问时报“重分析点缓冲区中的数据无效”。
+3. 复制并校验：`rclone copy <repo>/asset-repo/objects V:\objects`。内容寻址对象库校验天然简单——文件名即 SHA-256，抽样 `Get-FileHash` 比对即可。
+4. 切换：本地 `objects` 改名为 `objects.local-backup`（留观察期，不直接删除），再 `New-Item -ItemType Junction -Path <repo>\asset-repo\objects -Target V:\objects`。
+5. 回归验证：经 Junction 读对象 + 哈希比对；插件侧搜索 / 详情 / 派生文件生成 / 新入库写入（新 blob 应自动出现在桶中）。
+6. 保证启动顺序：挂载必须先于 OpenClaw Gateway（可用开机计划任务，SYSTEM 身份、失败重试）。挂载盘是唯一单点依赖，素材突然全部读不到时先查挂载状态。
 
-- 可把审片意见登记到资产、资产版本、实体或项目引用上。
-- 支持从画布卡片导出批注简报。
-- 支持创建返修卡并跟踪 `open / in_progress / resolved / rejected` 状态。
-- 支持把审片截图或生成输出版本作为返修证据。
+**其他提示**
 
----
+- 同地域内网访问通常免流量费（如腾讯云 CVM ↔ 同地域 COS），可用 `nslookup <bucket>.cos.<region>.myqcloud.com` 验证是否返回内网 IP（10.x / 169.254.x）。
+- deep integrity_scan 会全量回源读取云端对象，大库少用；日常用浅扫描。
+- Linux/macOS 同理：rclone mount 到本地路径后，用符号链接替换 `objects` 目录即可（无 Junction 兼容性问题）。
+- 参考实现记录（腾讯云 COS 实测）：`docs/cos-storage-research-2026-08-22.md`（使用者工作区）、Wiki `procedures/rclone-cos-windows-junction.md`。
 
-## Workbench v1.4 页面
-
-新版工作台已经取代旧版单文件前端，当前包含 8 个主要页面：
-
-| 页面 | 路径 | 用途 |
-|---|---|---|
-| 仪表盘 | `/` | 项目、资产、暂存、风险等概览 |
-| 项目 | `/projects` | 项目卡片、项目详情、错误/警告徽标 |
-| 资产库 | `/assets` | 搜索、筛选、表格、资产检查器 |
-| 画布 | `/canvas` | React Flow 只读无限画布可视化 |
-| 生成 | `/generate` | 生成槽位匹配、预检门、JSON 包 |
-| 暂存 | `/staging` | 拖拽上传、入库、拒绝 |
-| 审计 | `/audit` | 审计日志、范围筛选、关键词检索 |
-| 设置 | `/settings` | 存储根、认证方式和系统信息 |
-
-另有：
-
-- 三栏式应用壳与检查器。
-- `Cmd+K` / `Ctrl+K` 命令面板。
-- 暗色主题与可访问性对比度修正。
-- `prefers-reduced-motion` 支持。
-- sourcemap 默认关闭。
-
-> 注意：v1.4 的画布页面是只读可视化；画布结构修改仍通过 Agent 工具或 RPC 完成。
-
----
-
-## 架构与数据模型
-
-### 技术栈
-
-后端：
-
-- Node.js `>=22`
-- ES Modules
-- `node:sqlite`
-- 无后端 npm 运行时依赖
-- OpenClaw native plugin manifest
-
-前端：
-
-- Vite 6
-- React 18
-- TypeScript
-- Tailwind CSS 4
-- TanStack Query
-- Zustand
-- React Router
-- React Flow / `@xyflow/react`
-
-### 数据层
-
-SQLite schema 覆盖：
-
-- `actors`
-- `assets`
-- `asset_versions`
-- `asset_version_changes`
-- `asset_branches`
-- `asset_relations`
-- `asset_sources`
-- `projects`
-- `project_references`
-- `asset_classifications`
-- `production_entities`
-- `asset_entity_links`
-- `asset_annotations`
-- `derived_files`
-- `canvases`
-- `canvas_shapes`
-- `canvas_edges`
-- `canvas_snapshots`
-- `commits`
-
-### 存储层
-
-默认仓库根目录：
-
-```text
-~/.openclaw-video-assets
-```
-
-仓库内部包含：
-
-- SQLite 元数据库。
-- 内容寻址对象存储。
-- staging 暂存区。
-- 认证哈希文件。
-- 派生文件与生成输出目录。
-
-这些运行时数据不应提交到 Git。
-
----
-
-## 安装
-
-### 方式 A：本地链接安装（推荐开发调试）
-
-```bash
-git clone https://github.com/canxia-hub/openclaw-video-assets.git
-cd openclaw-video-assets
-openclaw plugins install -l .
-openclaw plugins enable video-assets
-openclaw gateway restart
-```
-
-### 方式 B：复制到 OpenClaw extensions 目录
-
-Windows PowerShell：
+## 当前验证
 
 ```powershell
-git clone https://github.com/canxia-hub/openclaw-video-assets.git "$env:USERPROFILE\.openclaw\extensions\video-assets"
-openclaw plugins enable video-assets
-openclaw gateway restart
-```
-
-macOS / Linux：
-
-```bash
-git clone https://github.com/canxia-hub/openclaw-video-assets.git ~/.openclaw/extensions/video-assets
-openclaw plugins enable video-assets
-openclaw gateway restart
-```
-
-### 验证插件是否被发现
-
-```bash
-openclaw plugins list
-openclaw plugins info video-assets
-```
-
-如果插件来自 workspace 或本地 source overlay，OpenClaw 默认 fail-closed：必须显式 enable。
-
----
-
-## 配置
-
-插件配置位于：
-
-```text
-plugins.entries.video-assets.config
-```
-
-示例：
-
-```json
-{
-  "plugins": {
-    "entries": {
-      "video-assets": {
-        "enabled": true,
-        "config": {
-          "repositoryRoot": "~/.openclaw-video-assets",
-          "allowPhysicalDelete": false,
-          "auth": {
-            "enabled": true,
-            "adminPasswordHashFile": "~/.openclaw-video-assets/auth/admin-password.hash",
-            "sessionTtlMinutes": 480,
-            "maxLoginAttempts": 5,
-            "loginWindowMinutes": 10,
-            "allowedOrigins": []
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-也可以使用 CLI：
-
-```bash
-openclaw config set plugins.entries.video-assets.config.repositoryRoot "~/.openclaw-video-assets"
-openclaw config set plugins.entries.video-assets.config.auth.adminPasswordHashFile "~/.openclaw-video-assets/auth/admin-password.hash"
-openclaw gateway restart
-```
-
-### 配置项
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|---|---:|---|---|
-| `repositoryRoot` | string | `~/.openclaw-video-assets` | 素材与项目仓库根目录 |
-| `allowPhysicalDelete` | boolean | `false` | 预留项；当前保持关闭，仅支持归档/软删除语义 |
-| `auth.enabled` | boolean | `true` | 是否启用插件级二次认证 |
-| `auth.adminPasswordHash` | string | 空 | 管理员密码哈希；不推荐直接写配置 |
-| `auth.adminPasswordHashFile` | string | `${repositoryRoot}/auth/admin-password.hash` | 哈希文件路径，推荐使用 |
-| `auth.sessionTtlMinutes` | number | `480` | 插件会话有效期 |
-| `auth.maxLoginAttempts` | number | `5` | 登录窗口内最大失败次数 |
-| `auth.loginWindowMinutes` | number | `10` | 登录限流窗口 |
-| `auth.allowedOrigins` | string[] | `[]` | 公网部署时的浏览器来源白名单 |
-
----
-
-## 首次启动与安全初始化
-
-Workbench 默认启用插件级认证。未配置管理员密码哈希时，登录会被拒绝。
-
-生成密码哈希：
-
-```bash
-cd /path/to/openclaw-video-assets
-node scripts/hash-password.mjs
-```
-
-也可以使用环境变量避免密码进入 shell 历史：
-
-```bash
-OPENCLAW_VIDEO_ASSETS_PASSWORD='replace-with-a-strong-password' node scripts/hash-password.mjs
-```
-
-把输出的哈希写入：
-
-```text
-<repositoryRoot>/auth/admin-password.hash
-```
-
-然后重启 Gateway。
-
-> 不要把明文密码、哈希文件、运行时仓库或 `.env` 提交到 Git。
-
----
-
-## 附属技能
-
-仓库附带 3 个 OpenClaw 技能，位于 `skills/`。它们用于让 Agent 按统一规范操作插件。
-
-### `video-assets-project-material`
-
-项目与素材管理规范：
-
-- 中文命名。
-- 项目/素材分类安放。
-- 资产信息卡。
-- 入库检查。
-- 审计脚本。
-- 素材接入画布生成链路。
-
-关键参考：
-
-- `references/chinese-naming-standard.md`
-- `references/material-classification-routing.md`
-- `references/intake-checklist.md`
-- `references/asset-info-card-standard.md`
-
-### `video-asset-taxonomy`
-
-分类、实体、批注和项目引用的可读性验收规范：
-
-- 前端徽标不等于噪音，必须转译为处理动作。
-- 关键生产资产不能只显示裸 ID。
-- 项目检查器错误必须为 0。
-- 警告必须逐条说明处理状态。
-
-关键参考：
-
-- `references/taxonomy-controlled-vocabulary.md`
-- `references/annotation-templates.md`
-- `references/production-continuity-rules.md`
-
-### `video-canvas-operator`
-
-画布操作规范：
-
-- 画布上下文读取。
-- 阶段分区与生成槽位。
-- Dreamina dry-run / handoff / real generation。
-- 生成输出入库与写回。
-- 审片批注与返修卡。
-- 画布审计和汇报格式。
-
-关键参考：
-
-- `references/video-canvas-tool-contract.md`
-
-### 安装技能
-
-Windows PowerShell：
-
-```powershell
-Copy-Item -Recurse .\skills\* "$env:USERPROFILE\.openclaw\skills\"
-```
-
-macOS / Linux：
-
-```bash
-cp -R ./skills/* ~/.openclaw/skills/
-```
-
----
-
-## Agent 工具清单
-
-插件注册 66 个 Agent 工具。按职责分组如下。
-
-### 资产核心
-
-- `video_asset_ingest`
-- `video_asset_search`
-- `video_asset_get`
-- `video_asset_update_rights`
-- `video_asset_create_version`
-- `video_asset_create_branch`
-- `video_asset_save_copy`
-- `video_asset_lineage`
-
-### 派生文件与完整性
-
-- `video_asset_register_derived_file`
-- `video_asset_generate_derived_file`
-- `video_asset_derived_files`
-- `video_asset_integrity_scan`
-
-### 分类与实体
-
-- `video_asset_classify`
-- `video_asset_get_classification`
-- `video_asset_taxonomy_report`
-- `video_entity_create`
-- `video_entity_search`
-- `video_entity_link_asset`
-
-### 批注
-
-- `video_asset_annotate`
-- `video_asset_annotations`
-- `video_asset_update_annotation`
-
-### 项目
-
-- `video_project_create`
-- `video_project_update_spec`
-- `video_project_add_asset_ref`
-- `video_project_update_asset_ref`
-- `video_project_remove_asset_ref`
-- `video_project_refs`
-- `video_project_asset_report`
-- `video_project_continuity_report`
-
-### 画布上下文与结构
-
-- `video_canvas_create`
-- `video_canvas_search`
-- `video_canvas_get`
-- `video_canvas_agent_context`
-- `video_canvas_widget_context`
-- `video_canvas_lint`
-- `video_canvas_apply_production_template`
-- `video_canvas_upsert_shape`
-- `video_canvas_delete_shape`
-- `video_canvas_link_shapes`
-- `video_canvas_unlink_shapes`
-- `video_canvas_save_snapshot`
-
-### 画布选择与视图状态
-
-- `video_canvas_save_selection`
-- `video_canvas_get_selection`
-- `video_canvas_save_view_state`
-- `video_canvas_get_view_state`
-- `render_video_assets_canvas_widget`
-
-### 生成槽位与交接
-
-- `video_canvas_create_generation_slot`
-- `video_canvas_update_generation_slot`
-- `video_canvas_generation_package`
-- `video_canvas_generation_handoff`
-- `video_canvas_dreamina_cli_plan`
-- `video_canvas_dreamina_cli_generate_video`
-- `video_canvas_insert_generated_asset`
-- `video_canvas_fill_generation_slot`
-
-### 审片与返修
-
-- `video_canvas_export_annotation_brief`
-- `video_canvas_register_review_annotation`
-- `video_canvas_create_revision_card`
-- `video_canvas_update_revision_card_status`
-
-### 豆包音频
-
-- `video_audio_doubao_plan`
-- `video_audio_doubao_generate`
-- `video_canvas_doubao_audio_plan`
-- `video_canvas_doubao_audio_generate`
-
-### KIE Suno
-
-- `video_audio_kie_suno_plan`
-- `video_audio_kie_suno_generate`
-- `video_canvas_kie_suno_audio_plan`
-- `video_canvas_kie_suno_audio_generate`
-
----
-
-## RPC 面
-
-插件同时暴露 `videoAssets.*` RPC namespace，供 Workbench 前端使用。
-
-主要分组：
-
-- `videoAssets.asset.*`
-- `videoAssets.entity.*`
-- `videoAssets.annotation.*`
-- `videoAssets.project.*`
-- `videoAssets.canvas.*`
-- `videoAssets.audio.*`
-- `videoAssets.file.*`
-- `videoAssets.staging.*`
-- `videoAssets.audit.*`
-- `videoAssets.ui.*`
-
-浏览器写操作有白名单约束；静态工作台和媒体路由受插件会话认证保护。
-
----
-
-## 生成链路治理规则
-
-### 通用原则
-
-1. 先 `plan`，后 `generate`。
-2. 默认不执行真实生成。
-3. 真实执行必须显式传入执行确认。
-4. 涉及成本时必须显式接受成本。
-5. 输出先入库，再写回画布。
-6. 生成输出默认保持 `license_status=unknown`、`risk_level=unknown`。
-7. 未清权素材不得进入正式生成输入。
-8. 高风险、受限或拒绝授权素材不得进入交付链路。
-
-### Dreamina / Seedance
-
-典型流程：
-
-1. `video_canvas_generation_package`
-2. `video_canvas_generation_handoff`
-3. `video_canvas_dreamina_cli_plan`
-4. 人工确认积分与授权。
-5. `video_canvas_dreamina_cli_generate_video`
-6. `ffprobe` 检查输出。
-7. `video_canvas_fill_generation_slot`
-
-支持模型集合由适配器按生成类型约束，包括 Seedance 2.0 / Seedance 2.0 Fast 等。
-
-### 豆包音频
-
-真实 API 模式需要：
-
-```text
-VOLCENGINE_DOUBAO_AUDIO_API_KEY
-VOLCENGINE_DOUBAO_AUDIO_API_KEY_ID（可选，取决于账号配置）
-```
-
-支持输出格式：
-
-- `wav`
-- `mp3`
-- `pcm`
-- `ogg_opus`
-
-### KIE Suno
-
-真实 API 模式需要：
-
-```text
-KIE_API_KEY
-```
-
-默认模型：
-
-```text
-V5_5
-```
-
-默认基础地址：
-
-```text
-https://api.kie.ai
-```
-
-KIE/Suno 输出可能包含封面图等非音频 URL；插件会过滤并只把音频 URL 纳入音频资产链路。
-
----
-
-## 本地验证
-
-后端与插件契约：
-
-```bash
 npm run check
 ```
 
-该命令覆盖：
+已通过。
 
-- 语法检查
-- 插件 preflight
-- 安全管理器
-- 服务 smoke
-- 服务一致性
-- 项目报告
-- 项目引用生命周期
-- 媒体探测 fixture
-- 文件 API
-- staging 流程
-- 画布 smoke
-- 画布 widget 状态与渲染
-- 生成槽位
-- 审片写回
-- Dreamina handoff / plan / video generate
-- 豆包音频 plan / generate
-- KIE Suno plan / generate
-- taxonomy 与连续性
-- 派生文件完整性与生成
+Smoke test 已验证：
 
-> `check:doubao-audio-live` 是真实外部 API smoke test，默认不包含在 `npm run check` 中，避免误消耗额度。
-
-前端构建：
-
-```bash
-npm --prefix ui-src ci
-npm --prefix ui-src run build
-```
-
-构建输出默认写入：
-
-```text
-ui-dist-next/
-```
-
-确认无误后再用新产物替换部署目录 `ui-dist/`。
-
----
-
-## 前端开发
-
-```bash
-cd ui-src
-npm ci
-npm run dev
-```
-
-Vite dev server 默认端口：
-
-```text
-5199
-```
-
-开发代理指向：
-
-```text
-http://127.0.0.1:33979
-```
-
-前端生产 base：
-
-```text
-/__openclaw__/video-assets/workbench/
-```
-
-如果 Gateway 端口不同，请修改 `ui-src/vite.config.ts` 中的 dev proxy。
-
----
-
-## 目录结构
-
-```text
-openclaw-video-assets/
-├── openclaw.plugin.json          # OpenClaw 插件 manifest 与 config schema
-├── package.json                  # 后端脚本与插件兼容声明
-├── src/                          # 插件后端
-│   ├── index.js                  # 工具、路由、RPC 注册入口
-│   ├── service.js                # 核心业务服务
-│   ├── schema.js                 # SQLite schema
-│   ├── storage.js                # 内容寻址对象存储
-│   ├── media-probe.js            # 媒体识别与 ffprobe 集成
-│   ├── security.js               # 插件级认证与限流
-│   ├── doubao-audio-adapter.js   # 豆包音频 plan/generate 适配
-│   └── kie-suno-adapter.js       # KIE Suno plan/generate 适配
-├── scripts/                      # 后端 smoke / contract / acceptance 测试
-├── ui-dist/                      # 当前可部署前端产物
-├── ui-src/                       # React Workbench 源码
-└── skills/                       # OpenClaw 附属技能
-    ├── video-assets-project-material/
-    ├── video-asset-taxonomy/
-    └── video-canvas-operator/
-```
-
----
-
-## 安全边界
-
-- 不提交运行时仓库。
-- 不提交密码、哈希、token、API key、cookie 或会话文件。
-- 不自动物理删除资产；默认只归档或软删除。
-- 生成输出默认授权未知，不能自动视为 cleared。
-- 公网部署时应保留 Gateway 认证，并配置插件级二次认证。
-- 公网部署时应配置 `allowedOrigins`，并通过 HTTPS 反向代理暴露。
-- 生成工具的真实执行路径必须显式确认成本与授权。
-
----
+- ingest raw asset
+- create branch
+- create version with change_items
+- save working copy
+- create project
+- add project reference
+- update project reference schema required fields
+- update asset metadata (title / description / tags)
+- query lineage
+- Doubao 音频 plan/generate
+- KIE Suno plan/generate
+- KIE Suno API URL 过滤回归：混入 cover `.jpeg` 时只登记音频 URL
+- canvas 音频生成槽写回
 
 ## 当前限制
 
-- 画布页面 v1.4 为只读可视化；拖拽编辑不落库。
-- `Cmd+K` 搜索结果尚未做跨类型相关度混排。
-- 暂存页空态还未统一为空态组件。
-- 媒体探测优先调用 `ffprobe`；缺少 `ffprobe` 时回退到扩展名/MIME 基础识别。
-- KIE/Suno 是第三方网关链路，模型、价格、字段和文件留存期可能变化。
-- Doubao、KIE、Dreamina 的真实生成都依赖外部环境变量、账号状态、CLI 登录态和额度。
+- media probe 已接 ffprobe；缺少 ffprobe 或探测失败时回退到扩展名/MIME 基础识别。
+- KIE/Suno 是第三方网关链路，模型、价格、字段和留存期可能变化；高成本或正式项目使用前应先做 `execute=false` 计划预检。
+- 生成音乐的授权状态不得自动标记为 cleared。
+- 对象库在云端挂载盘上时，挂载未就绪会导致素材读写全部失败；需保证挂载先于 Gateway 启动（见“云端对象存储接入”）。
 
----
+## 下一步
 
-## 发布说明
-
-### v1.4.1
-
-- 添加 MIT License，并将包元数据与插件清单版本同步到 `1.4.1`。
-- 更新公开发布说明，明确允许在保留版权声明与许可证文本的前提下使用、复制、修改、合并、发布、分发、再许可和销售本软件。
-
-### v1.4.0
-
-- 发布新版 Workbench v1.4。
-- 旧版单文件前端替换为 Vite + React + TypeScript 工作台。
-- 新增 8 个页面：仪表盘、项目、资产库、画布、生成、暂存、审计、设置。
-- 新增 Cmd+K 命令面板。
-- 新增项目/资产检查器。
-- 新增 React Flow 只读画布。
-- 新增生成准备页与槽位匹配展示。
-- 新增暂存拖拽上传链路。
-- 整理 3 个配套 OpenClaw 技能。
-- 清理公开发布边界中的本机路径、内部文档指针与运行时产物。
-
----
-
-## License
-
-本项目采用 [MIT License](LICENSE)。
-
-MIT 是主流宽松开源许可证：在保留版权声明与许可证文本的前提下，允许使用、复制、修改、合并、发布、分发、再许可和销售本软件。
+1. 为 KIE/Suno 输出增加更细的封面图独立入库策略。
+2. 增加项目级音乐审听、响度、循环点与对白遮挡检查报告。
+3. 为更多 KIE Suno endpoint 扩展插件工具，如 extend、stems、WAV、MV、lyrics。

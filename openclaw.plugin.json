@@ -2,7 +2,7 @@
   "id": "video-assets",
   "name": "视频资产库",
   "description": "面向视频生产的项目资产库、制作画布与生成写回插件。",
-  "version": "1.5.0",
+  "version": "0.2.0",
   "contracts": {
     "tools": [
       "video_asset_ingest",
@@ -106,6 +106,15 @@
       "allowPhysicalDelete": {
         "type": "boolean",
         "description": "预留配置。当前版本保持关闭，仅支持归档或软删除语义。"
+      },
+      "toolSurface": {
+        "type": "string",
+        "enum": ["legacy", "contract"],
+        "description": "工具面强制选择；缺省按 manifest contracts.tools 推导。"
+      },
+      "basePath": {
+        "type": "string",
+        "description": "顶层 basePath 回退；security.basePath 优先。"
       },
       "audio": {
         "type": "object",
