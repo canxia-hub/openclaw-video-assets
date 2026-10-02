@@ -1,5 +1,7 @@
 # Video Assets Plugin
 
+> **最新公告（2026-10-03）**：`main` 现为 **v0.2.0**（插件特性线 v1.5.0，REN 生产线），已在 **OpenClaw 2026.9.7** 生产验证加载与全部 69 个工具。v0.2.0 相对早期 v0.1.0 npm 制品补齐了 9.7 宿主兼容（全部工具 schema 显式 `required`、`verifiedHosts` 含 2026.9.7、`toolSurface`/`basePath` 配置）。请直接使用 `main` 或 tag `v0.2.0`。
+
 状态：已接入 OpenClaw Gateway，用于视频项目资产、制作画布、生成写回与音频/音乐资产管理。
 
 ## 当前已实现
@@ -111,11 +113,8 @@ KIE / 豆包音频适配器的 API Key 按以下顺序解析（两者一致）�
 
 ## 当前验证
 
-```powershell
-npm run check
-```
-
-已通过。
+- **宿主**：OpenClaw 2026.9.3 / 2026.9.5 / **2026.9.7**（`verifiedHosts`，见 `src/sdk-compat.js`）；2026.9.7 生产验证：dashboard RPC、asset.search RPC、受保护工作台 HTML 通过，注册面 69 工具 / 89 gateway 方法 / 9 条 HTTP 路由，三轮冷启动零重复注册。
+- **回归**：`npm run check`（语法 / RPC 契约 / 安全域 / 画布 / 生成任务 / REN-11 全套）已通过。
 
 Smoke test 已验证：
 
