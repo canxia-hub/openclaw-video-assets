@@ -1,9 +1,19 @@
 # Changelog
 
+## 0.2.0 - 2026-10-03
+
+### Fixed
+
+- OpenClaw 2026.9.7 host compatibility: every tool schema now declares an explicit `required` array; enum value lists hoisted to frozen shared constants.
+- `verifiedHosts` now includes 2026.9.7.
+- Manifest adds `toolSurface` (legacy|contract) and `basePath` fallback config; ui-dist rebuilt with `RELEASE.json`.
+
 ## 1.5.0 - 2026-09-26
 
 ### Added
 
+- Vendor-neutral cloud object storage guidance: migrate `asset-repo/objects/` to any S3-compatible bucket (COS/OSS/S3/R2/MinIO) via an rclone disk-mode mount plus a Junction/symlink, with no plugin code changes; `metadata/` and `cache/` must stay local. See README “云端对象存储接入”.
+- `repositoryRoot` config description now documents the cloud-storage wiring and constraints.
 - Native Dreamina/Seedance drive from the canvas: seedance2.5 (text/image/multimodal-to-video, 480p-1080p, 4-30s) and Seedream 5.0Pro images, plus `video_canvas_dreamina_cli_generate_image` and `video_canvas_dreamina_cli_upscale_image` (2k/4k/8k). Model capabilities consolidated into single spec tables (`DREAMINA_VIDEO_MODEL_SPECS` / `DREAMINA_IMAGE_MODEL_SPECS`).
 - Generation jobs subsystem: submit/poll/reconcile phases persisted across restarts (`pending_phase`), bounded download retries, slot-column tracking, crash-restart and recovery-reentry suites.
 - Security/domain hardening: scoped auth for uploads/file/thumb/proxy, CSRF origin policy, Range/206/416 media serving, ETag/Last-Modified, session cookie flags, logout invalidation, proxy trust controls, generation policy gates with fail-closed authorization.
@@ -19,6 +29,7 @@
 ### Changed
 
 - Registration surface: 69 tools declared in `contracts.tools` (was 45 at v1.4.x).
+
 ## 1.4.2 - 2026-08-13
 
 ### Fixed
