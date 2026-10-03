@@ -50,7 +50,7 @@
 
 要点：
 
-- **模型能力收敛为单一规格表**（`src/service.js` 的 `DREAMINA_VIDEO_MODEL_SPECS` / `DREAMINA_IMAGE_MODEL_SPECS`），工具 schema 的 enum 由表派生。新增/调整模型只改表，**不要**在 enum 与校验集合两处各写一份。
+- **模型能力收敛为单一规格表**（`src/capability-registry.js` 的 `DREAMINA_VIDEO_MODEL_SPECS` / `DREAMINA_IMAGE_MODEL_SPECS`，REN-09 自 service.js 迁入），工具 schema 的 enum 由表派生。新增/调整模型只改表，**不要**在 enum 与校验集合两处各写一份。
 - **上传路径必须带正确扩展名**：对象库文件一律以 `.blob` 结尾，而即梦 CLI 按扩展名判定上传类型；插件已内建 `materializeDreaminaUploadFile()` 在上传前物化为带正确扩展名的缓存文件（mime 优先、magic bytes 回退）。上传阶段失败不计费。
 - **真实执行需显式同意**：`execute=true` 且 `accept_credit_spend=true`；默认先跑 `user_credit` 预检，返回中带 `credit_before` / `credit_after`。
 - **写回产出**：生成结果会作为 `draft_output` 卡片写回画布。该卡片**不参与**下一次交接包的**输入**校验（`GENERATION_INPUT_SLOT_KEYS` 已显式排除 `draft_output`），因此未做 taxonomy 分类**不会**阻断下一次生成；仍建议用 `video_asset_classify`（`delivery / generated_output / <生成型>`）补分类，以维持素材检索与分类连续性。
