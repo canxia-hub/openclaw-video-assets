@@ -5,6 +5,7 @@ import { buildOperationSpecs, CONTRACT_TOOL_NAMES, allAdapterTargets } from "./c
 import { LEGACY_ALIAS, CONTRACT_VERSION } from "./contract/registry.generated.js";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { VideoAssetService } from "./service.js";
+import { NARRATIVE_TOOLS, NARRATIVE_TOOL_NAMES, NARRATIVE_BROWSER_WRITES, narrativeRpc } from "./narrative-contract.js";
 // REN-09：工具 schema 的模型/分辨率/比例枚举统一由能力注册表派生，
 // 使「注册表 → schema」单向可追溯；枚举内不再手工维护第二份清单。
 import { schemaEnums } from "./capability-registry.js";
@@ -358,7 +359,7 @@ function assertGenerationPolicyCoverage(api, surface = "legacy") {
  * unaccounted for.
  */
 function assertContractProviderParity(api) {
-  const parity = assertContractProviderParityCore({ adapterTargets: allAdapterTargets() });
+  const parity = assertContractProviderParityCore({ adapterTargets: [...allAdapterTargets(), { legacy: "video_novel_generate" }] });
   if (!parity.ok) {
     const error = new Error(`contract paid-path parity failed: ${parity.problems.join("; ")}`);
     api.logger.error?.(`[video-assets] ${error.message}`);
@@ -907,6 +908,7 @@ function kieSunoToolSchema({ includeCanvas }) {
 }
 
 function registerTools(api) {
+  for (const spec of NARRATIVE_TOOLS) registerToolDefinition(api, tool(spec.name, spec.description, spec.properties, args => service[spec.method](args), ["project_id", "op"]));
   // ----------------------------------------------------------------------------------------------
   // REN-04: reduced contract surface.
   //
@@ -928,7 +930,7 @@ function registerTools(api) {
   // silently exposing the wrong tool list.
   const declaredToolNames = readOwnManifest()?.contracts?.tools ?? [];
   const manifestWantsContract =
-    declaredToolNames.length === CONTRACT_TOOL_NAMES.length &&
+    declaredToolNames.length === CONTRACT_TOOL_NAMES.length + NARRATIVE_TOOL_NAMES.length &&
     CONTRACT_TOOL_NAMES.every((n) => declaredToolNames.includes(n));
   const configuredSurface = api.pluginConfig?.toolSurface ?? (manifestWantsContract ? "contract" : "legacy");
   activeToolSurface = configuredSurface;
@@ -1743,7 +1745,7 @@ function registerUiApiRoute(api) {
         });
         return sendJson(res, 200, { ok: true, result: await handler(withTrustedContext(body.params ?? {}, context)) });
       } catch (error) {
-        return sendJson(res, error.status ?? 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        return sendJson(res, error.status ?? 400, { ok: false, error: error instanceof Error ? error.message : String(error), code: error.code ?? "UNAVAILABLE", details: error.details ?? null });
       }
     }
   });
@@ -2026,12 +2028,14 @@ function allRpc() {
     "videoAssets.staging.reject": write((params) => service.rejectStagingFile(params)),
     "videoAssets.audit.commits": read((params) => service.listCommits(params)),
     "videoAssets.ui.dashboardSummary": read((params) => ({ ...service.uiDashboardSummary(), security: securityDiagnostics() })),
+    ...narrativeRpc(service),
   };
 }
 
 function uiBrowserRpc() {
   const methods = allRpc();
   const browserWriteAllowlist = new Set([
+    ...NARRATIVE_BROWSER_WRITES,
     "videoAssets.staging.upload",
     "videoAssets.staging.ingest",
     "videoAssets.staging.reject",

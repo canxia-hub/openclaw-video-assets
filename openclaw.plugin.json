@@ -73,7 +73,11 @@
       "video_project_remove_asset_ref",
       "video_project_refs",
       "video_project_asset_report",
-      "video_project_continuity_report"
+      "video_project_continuity_report",
+      "video_novel_document",
+      "video_novel_workflow",
+      "video_novel_adaptation",
+      "video_novel_generate"
     ]
   },
   "activation": {
@@ -89,6 +93,11 @@
         },
         {
           "path": "audio.doubao.apiKey",
+          "expected": "string",
+          "ownerKind": "capability"
+        },
+        {
+          "path": "narrative.model.apiKey",
           "expected": "string",
           "ownerKind": "capability"
         }
@@ -109,7 +118,10 @@
       },
       "toolSurface": {
         "type": "string",
-        "enum": ["legacy", "contract"],
+        "enum": [
+          "legacy",
+          "contract"
+        ],
         "description": "工具面强制选择；缺省按 manifest contracts.tools 推导。"
       },
       "basePath": {
@@ -514,11 +526,172 @@
         "additionalProperties": false,
         "description": "REN-10 持久异步生成队列。默认关闭且预算为 0；只有显式授权后才允许排队，关闭不影响已提交任务的对账与收取。",
         "properties": {
-          "enabled": { "type": "boolean", "description": "允许创建新的异步生成 job；默认 false。" },
-          "maxCredits": { "type": "number", "minimum": 0, "description": "持久预算上限；预留与已提交费用共同计入。" },
-          "maxConcurrent": { "type": "number", "minimum": 1, "maximum": 8, "description": "本地 worker 并发上限。" },
-          "allowedActors": { "type": "array", "items": { "type": "string" }, "description": "允许创建 job 的可信 actor；空数组表示只依赖可信 scope。" },
-          "allowedSurfaces": { "type": "array", "items": { "type": "string", "enum": ["tool", "ui", "browser", "gateway"] }, "description": "工具与 UI 共用的服务端入口表面白名单。" }
+          "enabled": {
+            "type": "boolean",
+            "description": "允许创建新的异步生成 job；默认 false。"
+          },
+          "maxCredits": {
+            "type": "number",
+            "minimum": 0,
+            "description": "持久预算上限；预留与已提交费用共同计入。"
+          },
+          "maxConcurrent": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 8,
+            "description": "本地 worker 并发上限。"
+          },
+          "allowedActors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "允许创建 job 的可信 actor；空数组表示只依赖可信 scope。"
+          },
+          "allowedSurfaces": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "tool",
+                "ui",
+                "browser",
+                "gateway"
+              ]
+            },
+            "description": "工具与 UI 共用的服务端入口表面白名单。"
+          }
+        }
+      },
+      "narrative": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "小说叙事域：编辑/审定/导出始终可用，独立模型默认不付费",
+        "properties": {
+          "model": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false
+              },
+              "endpoint": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "apiKey": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "source",
+                      "provider",
+                      "id"
+                    ],
+                    "properties": {
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "env",
+                          "file",
+                          "exec"
+                        ]
+                      },
+                      "provider": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                ]
+              },
+              "currency": {
+                "type": "string",
+                "enum": [
+                  "USD",
+                  "CNY"
+                ]
+              },
+              "inputPerMillion": {
+                "type": "number",
+                "minimum": 0
+              },
+              "outputPerMillion": {
+                "type": "number",
+                "minimum": 0
+              },
+              "priceEvidence": {
+                "type": "string"
+              },
+              "budgetAmount": {
+                "type": "number",
+                "minimum": 0
+              },
+              "maxOutputTokens": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65536
+              },
+              "maxInputBytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 2000000
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 60000
+              },
+              "allowActors": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "allowSurfaces": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "tool",
+                    "gateway",
+                    "browser"
+                  ]
+                }
+              },
+              "requireOperatorScope": {
+                "type": "boolean",
+                "default": true
+              },
+              "roles": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "writer": {
+                    "type": "string"
+                  },
+                  "planner": {
+                    "type": "string"
+                  },
+                  "reviewer": {
+                    "type": "string"
+                  },
+                  "state_extractor": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
         }
       }
     }

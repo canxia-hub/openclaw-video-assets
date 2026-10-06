@@ -52,7 +52,7 @@ assert.equal(api1.httpRoutes.length, 9, "REN-06 adds the streaming upload route 
 // 89 after REN-10 adds eight durable generation-job methods to REN-08's 81-method surface.
 // The reasoning for exactly those three is written where the surface is built (src/index.js, allRpc) and asserted
 // in the registration contract test; this file mirrors the number so a reload regression cannot hide behind it.
-assert.equal(api1.gatewayMethods.length, 89);
+assert.equal(api1.gatewayMethods.length, 97);
 report.generations.push({ generation: 1, counts: ledger1.history[0].counts });
 ok("generation 1 registers one service, one route set and one RPC set");
 
@@ -87,7 +87,7 @@ assert.deepEqual(ledger2.history.map((entry) => entry.counts), [ledger1.history[
 assert.equal(api2.services.length, 1, "reload must not accumulate services");
 assert.equal(api2.services[0].id, "video-assets-repository");
 assert.equal(api2.httpRoutes.length, 9, "reload must not accumulate routes");
-assert.equal(api2.gatewayMethods.length, 89, "reload must not accumulate RPC methods (89 after the second registration, as after the first)");
+assert.equal(api2.gatewayMethods.length, 97, "reload must not accumulate RPC methods (89 after the second registration, as after the first)");
 assert.notEqual(api2.httpRoutes[0].handler, api1.httpRoutes[0].handler, "generation 2 must not reuse generation 1 handlers");
 assert.notEqual(api2.gatewayMethods[0].handler, api1.gatewayMethods[0].handler, "generation 2 must not reuse generation 1 RPC handlers");
 report.generations.push({ generation: 2, counts: ledger2.history[1].counts });
