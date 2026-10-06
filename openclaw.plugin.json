@@ -1,8 +1,8 @@
 {
   "id": "video-assets",
   "name": "视频资产库",
-  "description": "面向视频生产的项目资产库、制作画布与生成写回插件。",
-  "version": "0.2.0",
+  "description": "面向小说与视频生产的项目资产库、叙事工作台、制作画布与生成写回插件。",
+  "version": "0.3.0",
   "contracts": {
     "tools": [
       "video_asset_ingest",
@@ -330,7 +330,7 @@
           },
           "publicOrigin": {
             "type": "string",
-            "description": "部署对外源（例如 https://chat.tkx.info）。声明后，携带会话 Cookie 的写请求必须携带白名单内 Origin。"
+            "description": "部署对外源（例如 https://workbench.example.com）。声明后，携带会话 Cookie 的写请求必须携带白名单内 Origin。"
           },
           "allowedOrigins": {
             "type": "array",
