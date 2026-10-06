@@ -34,6 +34,8 @@
  *   ui-bridge           - serves the browser workbench surface
  */
 
+import { NARRATIVE_CLASSIFICATIONS } from "./narrative-contract.js";
+
 export const CLASSIFICATION_KINDS = Object.freeze([
   "provider-operation",
   "provider-orchestration",
@@ -46,6 +48,7 @@ export const CLASSIFICATION_KINDS = Object.freeze([
 
 /** Tool name (as registered) -> classification. Closed world: 69 tools, no wildcards. */
 export const TOOL_CLASSIFICATION = Object.freeze({
+  ...NARRATIVE_CLASSIFICATIONS.tools,
   // --- paid provider operations (the only names that may reach a provider) ----------------------
   video_canvas_dreamina_cli_generate_video: "provider-operation dreamina.video.generate",
   video_canvas_dreamina_cli_generate_image: "provider-operation dreamina.image.generate",
@@ -130,6 +133,7 @@ export const TOOL_CLASSIFICATION = Object.freeze({
 
 /** Gateway RPC name -> classification. Closed world: 77 methods, no wildcards. */
 export const RPC_CLASSIFICATION = Object.freeze({
+  ...NARRATIVE_CLASSIFICATIONS.rpc,
   // paid provider operations
   "videoAssets.canvas.dreaminaCliGenerateVideo": "provider-operation dreamina.video.generate",
   "videoAssets.audio.doubaoGenerate": "provider-operation audio.doubao.generate",
@@ -348,6 +352,7 @@ export function classifyRegistration({ toolNames = [], rpcNames = [], entries = 
  * that exactly those paid paths - and no others - remain reachable.
  */
 export const TOOL_CLASSIFICATION_CONTRACT = Object.freeze({
+  ...NARRATIVE_CLASSIFICATIONS.tools,
   // --- may reach a paid provider ----------------------------------------------------------------
   video_generate:
     "provider-operation dreamina.video.generate,dreamina.image.generate,dreamina.image.upscale," +

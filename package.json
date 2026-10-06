@@ -1,14 +1,16 @@
 {
   "name": "@openclaw-lab/video-asset-plugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "private": true,
-  "description": "面向视频生产的项目资产库、制作画布与生成写回插件。",
+  "description": "面向小说与视频生产的项目资产库、叙事工作台、制作画布与生成写回插件。",
   "files": [
     "src/",
     "ui-dist/",
     "openclaw.plugin.json",
-    "README.md"
+    "README.md",
+    "NARRATIVE.md",
+    "CHANGELOG.md"
   ],
   "openclaw": {
     "extensions": [
@@ -88,7 +90,6 @@
     "check:ren11-tool-poll": "node scripts/ren11-tool-poll-convergence-test.mjs",
     "check:generation-job-slot-column": "node scripts/generation-job-slot-column-test.mjs",
     "check:ren11-fixture": "node scripts/ren11-fixture-qc-smoke.mjs",
-    "check:generation-job-recovery-reentry": "node scripts/generation-job-recovery-reentry-test.mjs",
     "check:ren11-sop-v2-e2e": "node scripts/ren11-sop-v2-e2e-test.mjs",
     "check:ren11-provider-adapter": "node scripts/ren11-provider-adapter-contract-test.mjs",
     "check:ren11-sop-v2-crash-resume": "node scripts/ren11-sop-v2-crash-resume-test.mjs",
@@ -97,7 +98,10 @@
     "matrix:provider-model": "node scripts/provider-model-matrix.mjs",
     "check:phase-f": "npm run check:syntax && npm run check:preflight && npm run check:canvas && npm run check:canvas-commands && npm run check:canvas-widget && npm run check:canvas-widget-render && npm run check:canvas-generation-slot && npm run check:canvas-governance && npm run check:canvas-draft-output && npm run check:handoff-model-version && npm run check:canvas-review-writeback && npm run check:dreamina-handoff && npm run check:dreamina-model-specs && npm run check:dreamina-cli-plan && npm run check:dreamina-cli-video && npm run check:dreamina-cli-image",
     "hash-password": "node scripts/hash-password.mjs",
-    "check": "npm run check:syntax && npm run check:ren11-runtime-spec && npm run check:ren11-tool-poll && npm run check:generation-job-slot-column && npm run check:preflight && npm run check:gateway-rpc && npm run check:localization && npm run check:robustness && npm run check:extended-robustness && npm run check:security && npm run check:service && npm run check:asset-metadata && npm run check:consistency && npm run check:report && npm run check:refs && npm run check:media && npm run check:file-api && npm run check:staging && npm run check:canvas && npm run check:canvas-commands && npm run check:canvas-widget && npm run check:canvas-widget-render && npm run check:canvas-generation-slot && npm run check:canvas-governance && npm run check:canvas-draft-output && npm run check:handoff-model-version && npm run check:canvas-review-writeback && npm run check:dreamina-handoff && npm run check:dreamina-model-specs && npm run check:dreamina-cli-plan && npm run check:dreamina-cli-video && npm run check:dreamina-cli-image && npm run check:doubao-audio-plan && npm run check:doubao-audio-generate && npm run check:kie-suno-plan && npm run check:kie-suno-generate && npm run check:audio-key-resolution && npm run check:taxonomy && npm run check:taxonomy-continuity && npm run check:derived-integrity && npm run check:derived-generation && npm run check:sdk-compat && npm run check:plugin-registration && npm run check:plugin-lifecycle && npm run check:host-compat-gate && npm run check:secretref-metadata && npm run check:security-domain && npm run check:security-proxy-trust && npm run check:security-generation-authz && npm run check:security-attribution && npm run check:security-generation-coverage && npm run check:security-tool-identity && npm run check:capability-registry && npm run check:external-call && npm run check:doubao-reference-matrix && npm run check:kie-suno-candidate && npm run check:ren09-doc-consistency && npm run check:ren09-boundary && npm run check:generation-jobs && npm run check:generation-job-phase-recovery && npm run check:generation-job-phase-crash-restart && npm run check:generation-job-phase-entry-gate && npm run check:generation-job-recovery-reentry"
+    "check": "npm run check:syntax && npm run check:ren11-runtime-spec && npm run check:ren11-tool-poll && npm run check:generation-job-slot-column && npm run check:preflight && npm run check:gateway-rpc && npm run check:localization && npm run check:robustness && npm run check:extended-robustness && npm run check:security && npm run check:service && npm run check:asset-metadata && npm run check:consistency && npm run check:report && npm run check:refs && npm run check:media && npm run check:file-api && npm run check:staging && npm run check:canvas && npm run check:canvas-commands && npm run check:canvas-widget && npm run check:canvas-widget-render && npm run check:canvas-generation-slot && npm run check:canvas-governance && npm run check:canvas-draft-output && npm run check:handoff-model-version && npm run check:canvas-review-writeback && npm run check:dreamina-handoff && npm run check:dreamina-model-specs && npm run check:dreamina-cli-plan && npm run check:dreamina-cli-video && npm run check:dreamina-cli-image && npm run check:doubao-audio-plan && npm run check:doubao-audio-generate && npm run check:kie-suno-plan && npm run check:kie-suno-generate && npm run check:audio-key-resolution && npm run check:taxonomy && npm run check:taxonomy-continuity && npm run check:derived-integrity && npm run check:derived-generation && npm run check:sdk-compat && npm run check:plugin-registration && npm run check:plugin-lifecycle && npm run check:host-compat-gate && npm run check:secretref-metadata && npm run check:security-domain && npm run check:security-proxy-trust && npm run check:security-generation-authz && npm run check:security-attribution && npm run check:security-generation-coverage && npm run check:security-tool-identity && npm run check:capability-registry && npm run check:external-call && npm run check:doubao-reference-matrix && npm run check:kie-suno-candidate && npm run check:ren09-doc-consistency && npm run check:ren09-boundary && npm run check:generation-jobs && npm run check:generation-job-phase-recovery && npm run check:generation-job-phase-crash-restart && npm run check:generation-job-phase-entry-gate && npm run check:generation-job-recovery-reentry && npm run check:narrative && npm run check:narrative-model && npm run check:narrative-boundary",
+    "check:narrative": "node scripts/narrative-smoke.mjs",
+    "check:narrative-model": "node scripts/narrative-model-test.mjs",
+    "check:narrative-boundary": "node scripts/narrative-boundary-test.mjs"
   },
   "engines": {
     "node": ">=22"

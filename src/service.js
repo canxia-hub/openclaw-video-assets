@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { CREATE_SCHEMA_SQL } from "./schema.js";
+import { NarrativeService } from "./narrative-service.js";
 import { resolveUploadPolicy } from "./upload-policy.js";
 import { UploadStore } from "./upload-store.js";
 import { TransferGate } from "./upload-gate.js";
@@ -223,6 +224,7 @@ export class VideoAssetService {
     this.db = new DatabaseSync(path.join(this.root, "metadata", "video-assets.sqlite"));
     runSqlScript(this.db, CREATE_SCHEMA_SQL);
     this.ensureSchemaMigrations();
+    this.narrative = new NarrativeService(this);
     // REN-06: the upload subsystem lives on the service so that every entry point - the streaming route
     // and the legacy staging helper alike - is bounded by the SAME policy object. A second copy of the
     // limits would mean two answers to "how big may this be", which is how a bypass appears.
@@ -253,9 +255,15 @@ export class VideoAssetService {
   }
 
   close() {
+    this.narrative?.jobs.dispose();
     this.db?.close();
     this.db = null;
   }
+
+  novelDocument(input) { this.requireDb(); return this.narrative.document(input); }
+  novelWorkflow(input) { this.requireDb(); return this.narrative.workflow(input); }
+  novelAdaptation(input) { this.requireDb(); return this.narrative.adaptation(input); }
+  novelGenerate(input) { this.requireDb(); return this.narrative.jobs.dispatch(input); }
 
   setCanvasWidgetRuntimeSupport(support = {}) {
     this.canvasWidgetRuntimeSupport = {

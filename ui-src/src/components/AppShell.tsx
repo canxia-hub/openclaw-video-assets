@@ -24,6 +24,7 @@ type NavItem = { to: string; label: string; icon: string };
 const PRODUCT_NAV: NavItem[] = [
   { to: "/dashboard", label: "项目总览", icon: "▣" },
   { to: "/assets", label: "素材库", icon: "❑" },
+  { to: "/novel", label: "小说工作台", icon: "▤" },
   { to: "/canvas", label: "镜头画布", icon: "✦" },
   { to: "/generate", label: "生成准备", icon: "◈" },
   { to: "/jobs", label: "生成队列", icon: "⇄" },
@@ -67,6 +68,7 @@ const CRUMB_MAP: Record<string, string> = {
   settings: "设置",
   diagnostics: "诊断",
   review: "审核交付",
+  novel: "小说工作台",
 };
 
 export default function AppShell() {

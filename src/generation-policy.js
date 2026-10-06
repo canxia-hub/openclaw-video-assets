@@ -272,6 +272,7 @@ export const GENERATION_DENIAL_CODES = Object.freeze({
  * issue exactly one call.
  */
 export const GENERATION_ENTRY_POLICY = Object.freeze({
+  "novel.text.generate": Object.freeze({ provider: "novel_text", cost_unit: "currency", cost_evidence: "operator-price-snapshot", provider_calls_max: 1, description: "独立文本模型；叙事币种账本与动画积分完全分离", tools: ["video_novel_generate"], rpc: ["videoAssets.novel.generation.write"], browser: ["videoAssets.novel.generation.write"], browser_aliases: ["novel.generation.write"] }),
   "dreamina.video.generate": Object.freeze({
     provider: "dreamina_cli",
     cost_unit: "credit",

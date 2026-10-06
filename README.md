@@ -1,8 +1,8 @@
 # Video Assets Plugin
 
-> **最新公告（2026-10-03）**：`main` 现为 **v0.2.0**（插件特性线 v1.5.0，REN 生产线），已在 **OpenClaw 2026.9.7** 生产验证加载与全部 69 个工具。v0.2.0 相对早期 v0.1.0 npm 制品补齐了 9.7 宿主兼容（全部工具 schema 显式 `required`、`verifiedHosts` 含 2026.9.7、`toolSurface`/`basePath` 配置）。请直接使用 `main` 或 tag `v0.2.0`。
+> **最新公告（2026-10-07）**：`main` 更新为 **v0.3.0**，在 v0.2.0 / REN 视频生产线基础上加入中文小说工作台、共享设定与章节版本、审稿、TXT/MD/EPUB 导出及小说—动画交接。新增 4 个小说领域工具；独立文本模型默认关闭付费。此次审查补齐了设定失效传播和动画映射来源绑定守卫。功能、配置与验证边界见 [NARRATIVE.md](NARRATIVE.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
 
-状态：已接入 OpenClaw Gateway，用于视频项目资产、制作画布、生成写回与音频/音乐资产管理。
+状态：提供共享项目资产、小说叙事、制作画布、生成写回与音频/音乐管理。基础小说域已在 OpenClaw 2026.9.7 Gateway 验收；本次审查修正通过隔离运行验证，不代表已有部署自动升级。
 
 ## 当前已实现
 
@@ -35,6 +35,22 @@
   - `video_canvas_kie_suno_audio_generate`
 - Gateway RPC namespace draft：`videoAssets.*`
 
+## 小说创作与动画共享设定
+
+工作台入口：`/__openclaw__/video-assets/workbench/novel`，沿用既有插件认证和项目对象库。
+
+| 工具 | 用途 |
+|---|---|
+| `video_novel_document` | 设定、人物、卷纲、章节、审稿与映射文档；CAS 保存、历史、差异和人类审定 |
+| `video_novel_workflow` | 固定审定上下文、项目参考资源、改稿影响、审稿记录及 TXT/MD/EPUB 导出 |
+| `video_novel_adaptation` | 固定来源章节与设定版本，形成经审定的动画场次交接 |
+| `video_novel_generate` | 独立文本模型的计划、幂等任务、用量、草稿提交、取消及人工对账 |
+
+- 设定新增/改版会使相关章节和映射需复查；过期输入不能继续导出，旧正文和旧导出保持不可变。
+- 模型执行需独立接入配置、明确预算与 `accept_cost=true`，默认不调用供应商；不混用动画积分或 Agent 的模型凭据。
+- 模型草稿不自动审定；动画映射必须通过绑定章节与快照的专用入口，不支持模型直接写入映射。
+- 当前工程验证不等于真实文学质量、真实供应商计费、浏览器登录后完整点击链或多阅读器认证。
+
 ## 即梦（Dreamina）CLI 生成路由（2026-09-20 更新）
 
 画布可直驱即梦 CLI，无需「CLI 直调 + 插件回填」绕行。
@@ -50,7 +66,7 @@
 
 要点：
 
-- **模型能力收敛为单一规格表**（`src/service.js` 的 `DREAMINA_VIDEO_MODEL_SPECS` / `DREAMINA_IMAGE_MODEL_SPECS`），工具 schema 的 enum 由表派生。新增/调整模型只改表，**不要**在 enum 与校验集合两处各写一份。
+- **模型能力收敛为单一规格表**（`src/capability-registry.js` 的 `DREAMINA_VIDEO_MODEL_SPECS` / `DREAMINA_IMAGE_MODEL_SPECS`，REN-09 自 service.js 迁入），工具 schema 的 enum 由表派生。新增/调整模型只改表，**不要**在 enum 与校验集合两处各写一份。
 - **上传路径必须带正确扩展名**：对象库文件一律以 `.blob` 结尾，而即梦 CLI 按扩展名判定上传类型；插件已内建 `materializeDreaminaUploadFile()` 在上传前物化为带正确扩展名的缓存文件（mime 优先、magic bytes 回退）。上传阶段失败不计费。
 - **真实执行需显式同意**：`execute=true` 且 `accept_credit_spend=true`；默认先跑 `user_credit` 预检，返回中带 `credit_before` / `credit_after`。
 - **写回产出**：生成结果会作为 `draft_output` 卡片写回画布。该卡片**不参与**下一次交接包的**输入**校验（`GENERATION_INPUT_SLOT_KEYS` 已显式排除 `draft_output`），因此未做 taxonomy 分类**不会**阻断下一次生成；仍建议用 `video_asset_classify`（`delivery / generated_output / <生成型>`）补分类，以维持素材检索与分类连续性。
@@ -83,7 +99,7 @@ KIE / 豆包音频适配器的 API Key 按以下顺序解析（两者一致）�
 - 输出下载（`downloadFile`）走公开 URL，无需密钥，行为不变；工具返回结构保持一致，仅 `validation.checks.auth` 在密钥来自配置时标注实际来源。
 - 验证脚本：`npm run check:audio-key-resolution`。
 - ⚠️ 引用不存在的 store 条目可能导致网关启动失败；配置前先 `secrets list` 确认 id 存在。
-- ⚠️ **configSchema 必须同时接受字符串与 SecretRef 对象**（`anyOf: [{type:string}, {source/provider/id 对象}]`）：声明 `secretInputs` 后，网关用 configSchema 校验的是**物化前的源配置**，SecretRef 此时仍是对象。若 schema 只写 `"type": "string"`，含引用的 openclaw.json 会在**启动校验阶段直接拒绝、网关重启失败**（2026-09-14 实测踩坑，由主线程修复；插件重装/更新时务必保留该 anyOf 写法，参考 `C:\Users\Administrator\openclaw-repair-20260914\repair-notes.md`）。
+- ⚠️ **configSchema 必须同时接受字符串与 SecretRef 对象**（`anyOf: [{type:string}, {source/provider/id 对象}]`）：声明 `secretInputs` 后，网关用 configSchema 校验的是**物化前的源配置**，SecretRef 此时仍是对象。若 schema 只写 `"type": "string"`，含引用的 openclaw.json 会在**启动校验阶段直接拒绝、网关重启失败**（2026-09-14 实测修复；插件重装/更新时务必保留该 anyOf 写法，参考清单中的 `configSchema` 和 `configContracts.secretInputs`）。
 
 ## 云端对象存储接入（rclone 挂载，厂商中立）
 
@@ -113,8 +129,10 @@ KIE / 豆包音频适配器的 API Key 按以下顺序解析（两者一致）�
 
 ## 当前验证
 
-- **宿主**：OpenClaw 2026.9.3 / 2026.9.5 / **2026.9.7**（`verifiedHosts`，见 `src/sdk-compat.js`）；2026.9.7 生产验证：dashboard RPC、asset.search RPC、受保护工作台 HTML 通过，注册面 69 工具 / 89 gateway 方法 / 9 条 HTTP 路由，三轮冷启动零重复注册。
-- **回归**：`npm run check`（语法 / RPC 契约 / 安全域 / 画布 / 生成任务 / REN-11 全套）已通过。
+- **宿主基线**：OpenClaw 2026.9.3 / 2026.9.5 / **2026.9.7**（`verifiedHosts`，见 `src/sdk-compat.js`）；v0.2.0 的 2026.9.7 生产验证覆盖 dashboard RPC、asset.search RPC、受保护工作台 HTML，以及 69 工具 / 89 gateway 方法 / 9 HTTP 路由的三轮冷启动。
+- **小说基线**：新增小说域的 Gateway 工程验收 9/9；新版隔离注册检查为 73 工具 / 97 gateway 方法 / 9 HTTP 路由。本次不重复部署或重启 Gateway。
+- **本次审查复验**：叙事服务 13/13、零费用模型夹具 11/11、生产插件入口的隔离认证 HTTP 边界及下载 11/11。模型真实供应商调用为 0；未将夹具当作文学质量或生产加载证据。
+- **复查入口**：`npm run check:narrative`、`npm run check:narrative-model`、`npm run check:narrative-boundary`；已加入综合 `npm run check`。旧版综合检查历史通过，本次仅运行受改动影响的检查。
 
 Smoke test 已验证：
 

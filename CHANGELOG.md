@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.0 - 2026-10-07
+
+### Added
+
+- Shared novel domain: canonical setting/character/timeline/foreshadow/volume/chapter/review documents, CAS revisions, immutable asset versions, operator approval and fixed context snapshots.
+- Chinese novel workbench and four tools: `video_novel_document`, `video_novel_workflow`, `video_novel_adaptation`, `video_novel_generate`.
+- Approved TXT/MD/EPUB exports and version-bound chapter-to-animation handoffs.
+- Independent OpenAI-compatible text-model jobs with persistent idempotency, token usage, separate USD/CNY budgets, cancellation and operator reconciliation; paid execution remains disabled by default.
+- Narrative service, model and authenticated HTTP boundary checks in the aggregate check command.
+
+### Fixed
+
+- Newly approved canon invalidates existing snapshot-bound chapters and mappings, including approved revisions behind newer drafts; export rechecks snapshot freshness before registration.
+- Animation mappings cannot override protected source identifiers through nested HTTP parameters or bypass binding checks through generic document saves.
+- Invalid animation-mapping model targets are rejected before provider spending.
+- Package/manifest/lock versions and root lockfile package identity are aligned; narrative and change documentation are included in the package file whitelist.
+
+### Verification boundary
+
+- Foundation novel domain previously passed 9 Gateway engineering checks. Review fixes were verified in isolation: 13 service checks, 11 zero-cost model checks and 11 authenticated HTTP checks.
+- No production redeployment, real paid text-provider requests, literary-quality certification or EPUB multi-reader certification is implied by this GitHub update.
+
 ## 0.2.0 - 2026-10-03
 
 ### Fixed

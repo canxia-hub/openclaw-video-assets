@@ -85,9 +85,21 @@ for (const [entry, method] of Object.entries(GENERATION_SERVICE_ENTRIES)) {
   assert.ok(serviceSource.includes(`this.beginGeneration({ entry: "${entry}"`), `service method ${method} must guard entry ${entry}`);
   assert.match(serviceSource, new RegExp(`\\n  (async )?${method}\\(input`), `the service must define ${method}`);
 }
-assert.equal((serviceSource.match(/this\.beginGeneration\(\{ entry:/g) ?? []).length, generationEntryKeys().length, "exactly one guard per policy entry");
+assert.equal((serviceSource.match(/this\.beginGeneration\(\{ entry:/g) ?? []).length, generationEntryKeys().length - 1, "seven original guards plus the independently verified narrative currency gateway");
 
 // ------------------------------------------------------------------------------------------------
+// Narrative text jobs reuse ProviderGateway, but keep a separate USD/CNY ledger. Verify the
+// one adapter binding is behind authorize + invokeAdapter; no raw wire credentials/identity.
+const narrativeSource=fs.readFileSync(path.join(rootDir,"src","narrative-model.js"),"utf8");
+assert.match(narrativeSource,/const ENTRY="novel.text.generate"/);
+assert.match(narrativeSource,/gateway\.authorize\(/);
+assert.match(narrativeSource,/gateway\.invokeAdapter\(\{audit_id:authorization.audit_id/);
+assert.equal((narrativeSource.match(/this\.adapter\(payload\)/g)??[]).length,1);
+assert.match(narrativeSource,/reserve:\(_entry,credits\)=>this.n.tx/);
+assert.match(narrativeSource,/currency=\?/);
+assert.doesNotMatch(narrativeSource,/input\.apiKey|input\.endpoint|input\.actor_id|input\.trusted/);
+assert.ok(narrativeSource.indexOf("gateway.authorize(")<narrativeSource.indexOf("gateway.invokeAdapter("));
+
 // 3. no identity or permission is read from the wire for the generation decision
 // ------------------------------------------------------------------------------------------------
 const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -104,13 +116,13 @@ assert.match(policyCode, /evidence: "none"/, "an entry without an operator estim
 // ------------------------------------------------------------------------------------------------
 // 4. the census grammar and completeness
 // ------------------------------------------------------------------------------------------------
-assert.equal(Object.keys(TOOL_CLASSIFICATION).length, 69, "the census must declare all 69 tools");
+assert.equal(Object.keys(TOOL_CLASSIFICATION).length, 73, "the census must declare all 69 tools");
 // 89 since REN-10 added eight persistent generation-job methods after REN-08's 81-method surface. The census
 // count is asserted rather than derived so that a new surface cannot appear without someone classifying it here -
 // which is exactly what happened when the three were first registered: assertGenerationPolicyCoverage refused to
 // start until each had an entry. The reasoning for the three is in src/index.js (allRpc) and the registration
 // contract test.
-assert.equal(Object.keys(RPC_CLASSIFICATION).length, 89, "the census must declare all 89 gateway methods (81 before REN-10 added the eight generation-job methods)");
+assert.equal(Object.keys(RPC_CLASSIFICATION).length, 97, "the census must declare all 89 gateway methods (81 before REN-10 added the eight generation-job methods)");
 for (const [name, value] of Object.entries(TOOL_CLASSIFICATION)) {
   const parsed = parseClassification(value);
   assert.equal(parsed.valid, true, `tool census entry ${name} is invalid: ${parsed.error}`);
@@ -150,12 +162,12 @@ const bogusTool = "video_canvas_dreamina_cli_generate_video_v3";
     entries: GENERATION_ENTRY_POLICY
   });
   assert.deepEqual(classification.fatal, [], `the census must be consistent with the entry table as shipped: ${classification.fatal.join("; ")}`);
-  assert.equal(classification.provider_operations.length, 12, "7 tools + 5 gateway methods are provider operations");
+  assert.equal(classification.provider_operations.length, 14, "7 tools + 5 gateway methods are provider operations");
 }
 {
   const census = censusProviderNames();
-  assert.equal(census.tools.length, 7, "exactly seven tools may reach a provider");
-  assert.equal(census.rpc.length, 5, "exactly five gateway methods may reach a provider");
+  assert.equal(census.tools.length, 8, "exactly seven tools may reach a provider");
+  assert.equal(census.rpc.length, 6, "exactly five gateway methods may reach a provider");
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -173,15 +185,15 @@ await entry.register(api);
 
 const registeredToolNames = api.tools.map((tool) => tool.definition.name);
 const registeredRpcNames = api.gatewayMethods.map((method) => method.method);
-assert.equal(registeredToolNames.length, 69, "the plugin must keep its 69-tool contract");
-assert.equal(registeredRpcNames.length, 89, "the plugin must keep its 89-method gateway contract (81 before REN-10 added the generation-job surface)");
+assert.equal(registeredToolNames.length, 73, "the plugin must keep its 69-tool contract");
+assert.equal(registeredRpcNames.length, 97, "the plugin must keep its 89-method gateway contract (81 before REN-10 added the generation-job surface)");
 
 const matrix = generationCoverageMatrix({ toolNames: registeredToolNames, rpcNames: registeredRpcNames });
 assert.deepEqual(matrix.ambiguous_names, [], "no generation name may map to two entries");
 assert.deepEqual(matrix.entries_without_provider, []);
 assert.deepEqual(matrix.unclassified_names, [], `every registered name must be declared in the census: ${matrix.unclassified_names.join(", ")}`);
 assert.deepEqual(matrix.cross_check, [], `the census and the entry tables must agree: ${matrix.cross_check.join("; ")}`);
-assert.equal(matrix.provider_operations.length, 12);
+assert.equal(matrix.provider_operations.length, 14);
 
 // the declared tools exist as registered tools, and each entry's tool/rpc name is a registered surface
 const registeredTools = new Set(registeredToolNames);
@@ -192,10 +204,11 @@ for (const [entryId, definition] of Object.entries(GENERATION_ENTRY_POLICY)) {
 }
 
 // browser RPC surface: the UI bridge exposes the generation methods it is allowed to call
+const {NARRATIVE_BROWSER_WRITES}=await import("../src/narrative-contract.js");
 const browserSource = fs.readFileSync(path.join(rootDir, "src", "index.js"), "utf8");
 for (const definition of Object.values(GENERATION_ENTRY_POLICY)) {
   for (const name of definition.browser) {
-    assert.ok(browserSource.includes(`"${name}"`), `browser entry point ${name} must be present in the UI bridge allowlist`);
+    assert.ok(browserSource.includes(`"${name}"`) || (NARRATIVE_BROWSER_WRITES.includes(name) && browserSource.includes("...NARRATIVE_BROWSER_WRITES")), `browser entry point ${name} must be present in the UI bridge allowlist`);
   }
 }
 const allowlistMatch = /const browserWriteAllowlist = new Set\(\[([\s\S]*?)\]\);/.exec(browserSource);

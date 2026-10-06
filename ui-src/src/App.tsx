@@ -15,6 +15,7 @@ import PlaceholderPage from "./components/PlaceholderPage";
 import ErrorBoundary from "./components/ErrorBoundary";
 import DiagnosticsPage from "./pages/DiagnosticsPage";
 import SettingsPage from "./pages/SettingsPage";
+import NovelPage from "./pages/NovelPage";
 
 export default function App() {
   const { status, probe } = useAuth();
@@ -46,6 +47,7 @@ export default function App() {
         <Route path="/canvas" element={<ErrorBoundary scope="镜头画布"><CanvasPage /></ErrorBoundary>} />
         <Route path="/canvas/:canvasId" element={<CanvasPage />} />
         <Route path="/generate" element={<ErrorBoundary scope="生成准备"><GenPrepPage /></ErrorBoundary>} />
+        <Route path="/novel" element={<ErrorBoundary scope="小说工作台"><NovelPage /></ErrorBoundary>} />
         <Route path="/jobs" element={<ErrorBoundary scope="生成队列"><GenerationQueuePage /></ErrorBoundary>} />
         {/*
           审核交付 has no delivery/handover surface yet. The label stays in the product navigation because the

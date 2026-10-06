@@ -76,7 +76,8 @@ for (const { definition } of api.tools) {
 // Nothing here changes the tool surface: contracts.tools stays at 17 and the legacy surface at 69. The editor is a
 // BROWSER surface - a person dragging a card in the workbench - so it belongs on the RPC surface, not in the model's
 // tool list.
-assert.equal(api.gatewayMethods.length, 89, "gateway RPC surface must keep its 89 methods (81 from REN-08 plus REN-10's eight generation-job methods)");
+// Narrative domain adds four read/write pairs; old 89 RPC names remain compatible.
+assert.equal(api.gatewayMethods.length, 97, "gateway RPC surface must keep its 89 methods (81 from REN-08 plus REN-10's eight generation-job methods)");
 const methodNames = new Set();
 const scopeTally = { [READ_SCOPE]: 0, [WRITE_SCOPE]: 0 };
 for (const { method, opts, handler } of api.gatewayMethods) {
