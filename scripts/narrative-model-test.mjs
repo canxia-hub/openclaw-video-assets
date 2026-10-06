@@ -19,6 +19,7 @@ const results=[];async function test(name,fn){await fn();results.push({name,pass
 await test("untrusted actor never reaches adapter",async()=>{await assert.rejects(service.novelGenerate(args(base,buildTrustedContext({surface:"browser",trusted:false}))),{code:"GENERATION_UNATTRIBUTED"});assert.equal(calls,0);});
 await test("no confirmation never reaches adapter",async()=>{await assert.rejects(service.novelGenerate(args({...base,accept_cost:false})),{code:"GENERATION_CONFIRMATION_REQUIRED"});assert.equal(calls,0);});
 await test("monetary budget enforced separately from animation credits",async()=>{model.budgetAmount=0;await assert.rejects(service.novelGenerate(args(base)),{code:"GENERATION_BUDGET_EXCEEDED"});assert.equal(calls,0);model.budgetAmount=1;});
+await test("invalid animation mapping targets never spend model budget",async()=>{await assert.rejects(service.novelGenerate(args({...base,kind:"adaptation"})),{code:"INVALID_KIND"});assert.equal(calls,0);});
 let first;
 await test("zero-cost injected adapter writes durable usage and result",async()=>{first=await service.novelGenerate(args(base));assert.equal(first.state,"ready");assert.equal(first.actual_amount,0.00005);assert.equal(calls,1);});
 await test("same idempotency key never sends again",async()=>{const again=await service.novelGenerate(args(base));assert.equal(again.job_id,first.job_id);assert.equal(calls,1);});

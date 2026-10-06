@@ -9,6 +9,17 @@ import { NarrativeModelJobs } from "./narrative-model.js";
 
 const uid = (prefix) => prefix + "_" + randomUUID().replaceAll("-", "");
 const now = () => new Date().toISOString();
+const CANON_KINDS = ["bible", "character", "timeline", "foreshadow", "volume"];
+const MAPPING_FIELDS = ["scene_goal", "motivation", "causality", "emotion", "boundaries", "visible_action", "dialogue"];
+function validateMapping(payload, extraKeys = []) {
+  const allowed = new Set([...MAPPING_FIELDS, ...extraKeys]);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) ||
+      Object.keys(payload).some(key => !allowed.has(key)) ||
+      MAPPING_FIELDS.some(key => typeof payload[key] !== "string" || !payload[key].trim())) {
+    throw novelError("INVALID_MAPPING", "映射只能包含规定的场次字段，来源章节与快照不可由嵌套参数覆盖");
+  }
+  return Object.fromEntries(MAPPING_FIELDS.map(key => [key, payload[key]]));
+}
 const parse = (value, fallback = []) => value ? JSON.parse(value) : fallback;
 export { NARRATIVE_KINDS, novelError } from "./narrative-common.js";
 import { NARRATIVE_KINDS, novelError } from "./narrative-common.js";
@@ -136,6 +147,21 @@ export class NarrativeService {
     throw novelError("INVALID_OPERATION","未知文档操作");
   }
 
+  validateAdaptationBinding(input, payload, dependencies, snapshotId) {
+    validateMapping(payload, ["chapter_revision_id", "snapshot_id"]);
+    if (!snapshotId || payload.snapshot_id !== snapshotId || !payload.chapter_revision_id) {
+      throw novelError("INVALID_MAPPING", "动画映射正文必须与版本固定的章节、设定快照一致");
+    }
+    const chapter = this.revision(input, payload.chapter_revision_id);
+    const snapshot = this.snapshot(input, snapshotId);
+    const required = [chapter.revision_id, ...snapshot.revision_ids];
+    if (chapter.kind !== "chapter" || dependencies.length !== required.length ||
+        required.some(id => !dependencies.includes(id))) {
+      throw novelError("INVALID_MAPPING", "动画映射来源必须与固定依赖版本完全一致");
+    }
+    return chapter;
+  }
+
   async save(input, jobCommit = null) {
     this.project(input);
     const key = requireText(input.document_key ?? (input.document_id ? this.documentRow(input).document_key : null),"document_key",200);
@@ -148,6 +174,15 @@ export class NarrativeService {
     if (!Array.isArray(deps) || deps.length > 1000 || new Set(deps).size !== deps.length) throw novelError("INVALID_DEPENDENCIES","依赖必须是不重复的版本列表");
     deps.forEach(id => this.revision(input,id));
     if (input.snapshot_id) this.snapshot(input,input.snapshot_id);
+    if (input.kind === "adaptation") {
+      let mapping;
+      try { mapping = JSON.parse(body); }
+      catch { throw novelError("INVALID_MAPPING", "动画映射正文必须是有效 JSON"); }
+      const chapter = this.validateAdaptationBinding(input, mapping, deps, input.snapshot_id);
+      if (chapter.approved_revision_id !== chapter.revision_id || chapter.needs_review) {
+        throw novelError("APPROVED_CHAPTER_REQUIRED", "映射源必须是审定章节", 409);
+      }
+    }
     const stored = await this.prepareObject(body);
     return this.tx(() => {
       const d = this.db.prepare("SELECT * FROM novel_documents WHERE project_id=? AND document_key=?").get(input.project_id,key);
@@ -188,6 +223,18 @@ export class NarrativeService {
       const impacted = d.approved_revision_id && d.approved_revision_id !== r.revision_id ? this.impact(input,d.approved_revision_id) : {documents:[],exports:[]};
       for (const other of impacted.documents) this.db.prepare("UPDATE novel_documents SET needs_review=1 WHERE document_id=?").run(other.document_id);
       this.db.prepare("UPDATE novel_documents SET approved_revision_id=?,needs_review=0,updated_at=? WHERE document_id=?").run(r.revision_id,now(),d.document_id);
+      // Adding canon also invalidates old snapshots; inspect both draft and approved heads.
+      if (CANON_KINDS.includes(d.kind)) {
+        const bound = this.db.prepare("SELECT d.*,r.snapshot_id FROM novel_documents d JOIN novel_revisions r ON r.document_id=d.document_id AND (r.revision_id=d.head_revision_id OR r.revision_id=d.approved_revision_id) WHERE d.project_id=? AND d.document_id!=? AND r.snapshot_id IS NOT NULL").all(input.project_id, d.document_id);
+        for (const dependent of bound) {
+          if (this.snapshotCurrent(input, dependent.snapshot_id)) continue;
+          this.db.prepare("UPDATE novel_documents SET needs_review=1,updated_at=? WHERE document_id=?").run(now(), dependent.document_id);
+          if (!impacted.documents.some(item => item.document_id === dependent.document_id)) {
+            impacted.documents.push({ document_id: dependent.document_id, title: dependent.title,
+              kind: dependent.kind, head_revision_id: dependent.head_revision_id });
+          }
+        }
+      }
       this.db.prepare("UPDATE project_references SET asset_version_id=?,pin_mode='pinned',notes='叙事审定版本',updated_at=? WHERE project_id=? AND asset_id=? AND status!='removed'").run(r.asset_version_id,now(),input.project_id,d.asset_id);
       this.audit(input,"novel.document.approve",input.project_id,{revision_id:r.revision_id,impacted});
       return {document_id:d.document_id,approved_revision_id:r.revision_id,impacted};
@@ -286,13 +333,16 @@ export class NarrativeService {
     if (!Array.isArray(requested) || requested.length === 0 || requested.length > 1000) throw novelError("CHAPTERS_REQUIRED","需要已审定章节才能导出");
     const revisions=requested.map(id=>this.readRevision(input,id));
     if(revisions.some(r=>r.kind!=="chapter" || r.approved_revision_id!==r.revision_id || r.needs_review)) throw novelError("APPROVED_CHAPTER_REQUIRED","只能导出已审定且无复查标记的章节",409);
+    if (revisions.some(r => r.snapshot_id && !this.snapshotCurrent(input, r.snapshot_id))) {
+      throw novelError("STALE_SNAPSHOT", "章节输入设定或资源已变更，复查后才能导出", 409);
+    }
     const format=input.format ?? "md";
     if(!["md","txt","epub"].includes(format))throw novelError("INVALID_FORMAT","支持 MD / TXT / EPUB");
     const body=format==="epub" ? createEpub({title:project.title,chapters:revisions}) :
       revisions.map((r,i)=>(format==="md"?"## ":"")+(i+1)+". "+r.title+"\n\n"+r.body).join("\n\n");
     const stored=await this.prepareObject(body,"."+format);
     return this.tx(()=>{
-      for(const r of revisions){const current=this.revision(input,r.revision_id);if(current.approved_revision_id!==r.revision_id || current.needs_review)throw novelError("HEAD_CONFLICT","导出期间章节状态已变化",409);}
+      for(const r of revisions){const current=this.revision(input,r.revision_id);if(current.approved_revision_id!==r.revision_id || current.needs_review || (current.snapshot_id && !this.snapshotCurrent(input,current.snapshot_id)))throw novelError("HEAD_CONFLICT","导出期间章节状态已变化",409);}
       const asset=this.registerObject(input,stored,{title:project.title+" · 小说导出",suffix:"."+format,mime:format==="epub"?"application/epub+zip":format==="txt"?"text/plain":"text/markdown",role:"delivery",changeSummary:"固定已审定章节导出",sourceVersions:revisions.map(r=>r.asset_version_id)});
       this.db.prepare("UPDATE project_references SET pin_mode='pinned' WHERE project_id=? AND asset_id=?").run(input.project_id,asset.asset_id);
       const exportId=uid("novelexport");
@@ -307,15 +357,15 @@ export class NarrativeService {
       if (!input.chapter_revision_id || !input.snapshot_id) throw novelError("SNAPSHOT_REQUIRED","动画映射必须固定章节与设定快照",409);
       const chapter=this.revision(input,input.chapter_revision_id);
       if(chapter.kind!=="chapter" || chapter.approved_revision_id!==chapter.revision_id || chapter.needs_review)throw novelError("APPROVED_CHAPTER_REQUIRED","映射源必须是审定章节",409);
-      const fields=["scene_goal","motivation","causality","emotion","boundaries","visible_action","dialogue"];
-      const payload=input.mapping;
-      if(!payload || typeof payload!=="object" || fields.some(f=>typeof payload[f]!=="string" || !payload[f].trim()))throw novelError("INVALID_MAPPING","映射缺少场次目标、动机、因果、情绪、边界、动作或对白");
+      const payload = validateMapping(input.mapping);
       const snap=this.snapshot(input,input.snapshot_id);
       return this.save(withTrustedContext({...input,kind:"adaptation",body:JSON.stringify({chapter_revision_id:chapter.revision_id,snapshot_id:snap.snapshot_id,...payload},null,2),dependencies:[chapter.revision_id,...snap.revision_ids]},trustedContextOf(input)));
     }
     const d=this.documentRow(input), r=this.readRevision(input,input.revision_id ?? d.head_revision_id);
     if(d.kind!=="adaptation")throw novelError("INVALID_KIND","该文档不是动画映射");
+    if (r.document_id !== d.document_id) throw novelError("INVALID_REVISION", "版本不属于映射文档");
     const mapping=parse(r.body,{});
+    this.validateAdaptationBinding(input, mapping, r.dependencies, r.snapshot_id);
     const stale=d.needs_review || !r.snapshot_id || !this.snapshotCurrent(input,r.snapshot_id) || r.dependencies.some(id=>{const dep=this.revision(input,id);return dep.approved_revision_id!==id || dep.needs_review;});
     if(input.op==="handoff" && (stale || d.approved_revision_id!==r.revision_id))throw novelError("ADAPTATION_NOT_APPROVED","交接须使用审定且未过期的动画映射",409);
     if(!["get","lint","handoff"].includes(input.op))throw novelError("INVALID_OPERATION","未知映射操作");

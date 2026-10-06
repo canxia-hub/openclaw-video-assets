@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ProviderGateway, trustedContextOf, withTrustedContext } from "./provider-gateway.js";
-import { novelError } from "./narrative-common.js";
+import { novelError, NARRATIVE_KINDS } from "./narrative-common.js";
 
 const ENTRY="novel.text.generate";
 const terminal=new Set(["succeeded","cancelled","failed","stale"]);
@@ -109,6 +109,9 @@ export class NarrativeModelJobs {
     if(typeof input.job_key!=="string"||!input.job_key.trim()||input.job_key.length>200)throw novelError("JOB_KEY_REQUIRED","执行需幂等 job_key");
     const existing=this.db.prepare("SELECT * FROM novel_jobs WHERE project_id=? AND job_key=?").get(input.project_id,input.job_key);
     if(existing)return safeJob(existing); // no second request, even after unknown submit/restart
+    if (!NARRATIVE_KINDS.includes(input.kind ?? "chapter") || input.kind === "adaptation") {
+      throw novelError("INVALID_KIND", "文本模型不能直接写动画映射；请通过固定章节和设定的映射入口保存");
+    }
     const p=this.plan(input),budget=amount(c.budgetAmount);
     const request={document_key:input.document_key,title:input.title,kind:input.kind??"chapter",volume_order:input.volume_order??0,chapter_order:input.chapter_order??0,expected_head:input.expected_head,role:input.role??"writer",max_output_tokens:p.max_output_tokens};
     if(!request.title||!request.document_key||!Object.hasOwn(input,"expected_head"))throw novelError("DOCUMENT_TARGET_REQUIRED","执行必须固定目标文档、标题和 expected_head");
