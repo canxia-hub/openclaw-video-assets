@@ -1,0 +1,4 @@
+interface:
+  display_name: "Video Canvas Operator"
+  short_description: "Operate project production canvases"
+  default_prompt: "Use -canvas-operator to inspect and update a video production canvas."

@@ -1,0 +1,332 @@
+[
+  {
+    "file": "deployment-baseline-20261031/openclaw.plugin.json",
+    "bytes": 27193,
+    "sha256": "4dc2443644458528d694d8f1dae10fd73e6136ca749cb4181848072c369b023f"
+  },
+  {
+    "file": "deployment-baseline-20261031/package.json",
+    "bytes": 9883,
+    "sha256": "312a8eb8c272a929d0092471daff1af0147431f75cf723482878156284423cf1"
+  },
+  {
+    "file": "deployment-baseline-20261031/README.md",
+    "bytes": 10996,
+    "sha256": "660c9f769d702cca9d4a43f1cc11fcb8ce23e70759e1460e84f467fa1e3728d0"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/base-path.js",
+    "bytes": 5513,
+    "sha256": "869fd95dd64a5f51f8d3070b71cd6e440e339695c31e0666f050a916a053aa0a"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/canvas-commands.js",
+    "bytes": 22482,
+    "sha256": "0fd1254a10de1779556e5cca369fef886d31d21957dc3069e036ed50f0e7ca0d"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/canvas-editing-policy.js",
+    "bytes": 4022,
+    "sha256": "23d97880b88c6dd6a4443aa947cc7ef367eedf1fca5f359e806a6880fd5acfd0"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/capability-registry.js",
+    "bytes": 58996,
+    "sha256": "11b78916c4ca5726c2354172d5b58edb240660678b6d0297305a295754810c31"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/content-identity.js",
+    "bytes": 10748,
+    "sha256": "8ce4d111560a50c56acd6b3c8bada88c41f5ac59a38690c0005606bf8f4e3ee2"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/contract/contract-surface-core.js",
+    "bytes": 21729,
+    "sha256": "e1fb1cf64ea96c2469ef20a4442527cdfc6acfe9a76c48f3229feddd81dbb026"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/contract/registry.generated.js",
+    "bytes": 239477,
+    "sha256": "033f4668e02c94c83e83df9b286ab8c0ef6aebe51e65a29146e163a78a5dbf38"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/derivation-queue.js",
+    "bytes": 24662,
+    "sha256": "4b7323a0c321b6af5067c0af7283fdae2ce268702aa43c631475f1440eea9f68"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/doubao-audio-adapter.js",
+    "bytes": 31696,
+    "sha256": "7c9a390a5d9fd8e8b5f5b540665353ddf2686962856fd8ca02adab09a2363abb"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/dreamina-cli-job-adapter.js",
+    "bytes": 58630,
+    "sha256": "076e811df2f4675ce53de0f2aafe7d299db8bebae3ffaac4403d37aac4b4f460"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/external-call.js",
+    "bytes": 17773,
+    "sha256": "856d19f42fa7a6dbd49db53599e4624df6526822b6fd02e5c822457af8d2157a"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/file-window.js",
+    "bytes": 5174,
+    "sha256": "5ce6d6f7139211f72bd12823641c65462399ae49948ed4ddf6d786958372165f"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/gateway-rpc.js",
+    "bytes": 3391,
+    "sha256": "c6ef696cb47ff335cdf97e3df4d472add591e9243f3fec3950d9e056857a0794"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/generation-jobs.js",
+    "bytes": 49857,
+    "sha256": "8ef7096f6bdfe500f1b27e6c148c27f82e5245ec7d8f119fafd4ceb7c794d2d4"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/generation-policy.js",
+    "bytes": 70008,
+    "sha256": "875278b5f848aafa3f03fe795209266bf85ef33343f00450d755900f52dfa63d"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/generation-registry.js",
+    "bytes": 22854,
+    "sha256": "e73238615acba603acbb175cae734af8e8c25655127b155e9b1ca7a8bbbaa625"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/index.js",
+    "bytes": 116095,
+    "sha256": "194dda7b56a1afa1622b770444b9e63b2accc1e7a7e8e697c4e4cdffdb7b63ad"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/kie-suno-adapter.js",
+    "bytes": 26174,
+    "sha256": "29121b3804308bd7a9ddd076899c943641c764986cc61de382b3c621db97af8b"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/kie-suno-candidate-adapter.js",
+    "bytes": 16211,
+    "sha256": "59ded6831857f40f63e58a4e417ac8b5e48386b478d60d868b272f30aab26f61"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/media-probe.js",
+    "bytes": 17688,
+    "sha256": "970462197ca31cfda36e48f385ba1e916dac0d6147d695671c00b9321ff823bd"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/media-transcode.js",
+    "bytes": 27497,
+    "sha256": "c59487abf869046064f3445210b70e4732bf0c003a3dec2b4708da890f4c8150"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/narrative-common.js",
+    "bytes": 349,
+    "sha256": "744f42420567808875bbcb806291dd95e58ffdbe268b0b97d739182c985f7ddc"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/narrative-contract.js",
+    "bytes": 4585,
+    "sha256": "5c41a727d799dd597296dedfd4464f6bd0f470788e862688950611ed50ddbc4b"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/narrative-export.js",
+    "bytes": 3893,
+    "sha256": "cb1de0a8564bdf9de0bcbae1badea9e68fdf4257c1eabfb7b40af784e4b8e0c3"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/narrative-model.js",
+    "bytes": 15015,
+    "sha256": "d7e2e933fb5f20113600b314ad17d96d62230c0a73e68fe7ea96153721422cb7"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/narrative-service.js",
+    "bytes": 28598,
+    "sha256": "c248e79549a1c554702ca6175a95793b8b6536127cd2441efbe620025d72a1d1"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/protected-stream.js",
+    "bytes": 12854,
+    "sha256": "d9a7dae39a14a7fc77784de73caf076bab3b691286e41222675910f2825ea9a4"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/provider-gateway.js",
+    "bytes": 33625,
+    "sha256": "eb36c3c8e3e8302e08cd839d84b569117d7ab7ef9d17040349b6be64fe08e7ff"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/request-security.js",
+    "bytes": 17841,
+    "sha256": "ddde79f17428dc108faa0dea8fe0b554586242bce0d67ce01afb97faacd874d9"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/schema.js",
+    "bytes": 19458,
+    "sha256": "0c149c63abf3d97bed7c36b9e65ad4b19528dc5df4eaa0871d7a5d537828eff7"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/sdk-compat.js",
+    "bytes": 43362,
+    "sha256": "95085c143dbdd1118d86bf34082d066fb5ca28821dbf9943aeb3f0cd8169d4f1"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/security.js",
+    "bytes": 20279,
+    "sha256": "aee6b114f7ceed7e0b2d3139f0ec3a2f38cf0bd06b228433d120b7f1dc214825"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/service.js",
+    "bytes": 387794,
+    "sha256": "01c959ae1e8b7713e188dfba45af2ad7f936d6351c3391cc20ee616ccca17eb8"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/sop-v2-fixture.js",
+    "bytes": 5053,
+    "sha256": "dd7520f8acb9db893d7c2ea8cbe6509786d9b29361ce425386d344073922ef0f"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/sop-v2-media.js",
+    "bytes": 24316,
+    "sha256": "bfe0b378cce728ba4c766065125820e048d8d703a6e4a2ef06afbe7cfb7651d6"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/sop-v2-orchestrator.js",
+    "bytes": 77406,
+    "sha256": "d55f3645269113803ee4a2e3e7ac6766b76061ef20ca056fc9450c41e8e335f3"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/sop-v2-provider-pipeline.js",
+    "bytes": 9542,
+    "sha256": "48401b9e2c84d9ebce4b665e64d42d4d383170068373100b52d6f82e2fd81218"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/sop-v2-qc.js",
+    "bytes": 19649,
+    "sha256": "b1f3c4069ee5ae5ce81400bd01ef6a48a6443a960ca53a5755e8ca09e550227d"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/storage.js",
+    "bytes": 8858,
+    "sha256": "3ec53356be664eb0e8d880519693bf00659d4131cc7e3a2e6cba1492fc70c623"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/upload-gate.js",
+    "bytes": 6471,
+    "sha256": "5c66ed720851b2d7743ee7183c215199e201e6017ca8a6d50368dca3a52b5153"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/upload-policy.js",
+    "bytes": 5676,
+    "sha256": "38f54ebcbda1e352fec8e7908e30669f17e94f824fdd5645e2c620a20bce7a75"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/upload-routes.js",
+    "bytes": 13687,
+    "sha256": "4b204a9bb3623c4d18f97ac8c04339e0c6d6222682b0ab4ca2ccf511f4fe0bb6"
+  },
+  {
+    "file": "deployment-baseline-20261031/src/upload-store.js",
+    "bytes": 43084,
+    "sha256": "215f11f4e6f54b5569a258f718a33790bf4d9e022c7fb6ee643420e47a1a91d0"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist/assets/index-BdHz4mtx.css",
+    "bytes": 46380,
+    "sha256": "89eda3153b0b66720f6a1e18fcfe6327b00a60724266383a8fca9d5d0aed4196"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist/assets/index-BvfJO6j-.js",
+    "bytes": 531138,
+    "sha256": "0acec8e77c04a4d7ceba9f09082a5d952ad30467d7a5e29dabe9c3592c8a8257"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist/index.html",
+    "bytes": 493,
+    "sha256": "922a618a5d01e66c51f1bea834b719443fc45f778232d31f7785b520fd3e933a"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist/RELEASE.json",
+    "bytes": 180,
+    "sha256": "b7ce0eebbd90853201ad9d3cb386eb71ec184eb1496d71e34937e94d4293c884"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/assets/index-Bc4bK_wc.js",
+    "bytes": 447468,
+    "sha256": "372057d5fc08e49bc2b4f57d184d13414e49b2aba3a8c75bff7eb897d094feed"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/assets/index-BdHz4mtx.css",
+    "bytes": 46380,
+    "sha256": "89eda3153b0b66720f6a1e18fcfe6327b00a60724266383a8fca9d5d0aed4196"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/assets/index-BG2rn9rh.js",
+    "bytes": 462271,
+    "sha256": "6269fa0247168af53888a5b03f963d31ded1d658ff78b55247e4393534e28bb3"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/assets/index-BjIKvdlg.js",
+    "bytes": 464306,
+    "sha256": "73ec05d867c8aa58c6b7cdab5476b0452264dcf928427afb84c843c2687fbc50"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/assets/index-BQj2qOYL.js",
+    "bytes": 517974,
+    "sha256": "7e9d2e8edc14a1772b6f82aeb1250e8352a5a5cc056d83c85e39e8ace8986f08"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/assets/index-BvfJO6j-.js",
+    "bytes": 531138,
+    "sha256": "0acec8e77c04a4d7ceba9f09082a5d952ad30467d7a5e29dabe9c3592c8a8257"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/assets/index-CjoOsH0c.css",
+    "bytes": 38612,
+    "sha256": "2855aaae92a7bfa6c2163d8b14b78530caca973b3e3e449c447213baf0842084"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/assets/index-CvhBeGEk.js",
+    "bytes": 464229,
+    "sha256": "afd0e3be9308a542fcfe24dedb57b85ec36016cdb85e954c7bbf95a4deeb0eeb"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/assets/index-D5RiKq_P.css",
+    "bytes": 45536,
+    "sha256": "6bee58a8ea59f4d722988fca3e18156d371e8e6cf9ba04bec461611aeb3b0ab2"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/assets/index-MyCVKp0R.css",
+    "bytes": 39948,
+    "sha256": "e3c13b847bb19c116ff0cc70419e25af24517795f23c6f8d969d14857213fa66"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/index.html",
+    "bytes": 493,
+    "sha256": "922a618a5d01e66c51f1bea834b719443fc45f778232d31f7785b520fd3e933a"
+  },
+  {
+    "file": "deployment-baseline-20261031/ui-dist.before-novel-20261007/RELEASE.json",
+    "bytes": 186,
+    "sha256": "8f7cf782e630dfaf8c8924aa5be1cb758caee11e0394bf39f319931414f71153"
+  },
+  {
+    "file": "archived-active-skills/plugin-frontend-visibility-gate/SKILL.md",
+    "bytes": 2395,
+    "sha256": "5fac61f0efb3491900581d0de08977e6dcb43d53e8596f116dcb6a5c0aa00246"
+  },
+  {
+    "file": "archived-active-skills/video-canvas-operator/agents/openai.yaml",
+    "bytes": 204,
+    "sha256": "7de2a51f4c734c13c0949b61795ec1e1cfc6f7db8225d1d5911b1681257f9eb9"
+  },
+  {
+    "file": "archived-active-skills/video-canvas-operator/references/video-canvas-tool-contract.md",
+    "bytes": 2797,
+    "sha256": "42f3876c8997e7bed3c592bfd9b22cf626d89b440df35998b76ff6422c055ea5"
+  },
+  {
+    "file": "archived-active-skills/video-canvas-operator/SKILL.md",
+    "bytes": 22475,
+    "sha256": "7541ad0541ed2c3fac72e9095d91c63a645e58971f5ddf93e30563fc1289a46a"
+  }
+]
