@@ -1,0 +1,2440 @@
+{
+  "version": "0.4.0",
+  "generatedFrom": "src/tool-specs.js + src/cli-tools.js + src/narrative-contract.js",
+  "tools": [
+    {
+      "name": "video_asset_ingest",
+      "description": "素材入库：将本地文件导入视频资产库。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "file_path": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "raw",
+              "working"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source_type": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_search",
+      "description": "搜索素材：按文本和基础筛选条件搜索视频素材。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "video_asset_get",
+      "description": "读取素材详情：读取素材、版本和分支详情。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_update_metadata",
+      "description": "更新素材元数据：修订素材标题、描述和标签，不改动媒体文件或版本谱系。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_update_rights",
+      "description": "更新授权与风险：更新素材授权状态、风险等级并追加来源证据。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "license_status": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "cleared",
+              "restricted",
+              "rejected"
+            ]
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "notes": {
+            "type": "string"
+          },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source_type": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "captured_at": {
+                "type": "string"
+              },
+              "original_author": {
+                "type": "string"
+              },
+              "license_hint": {
+                "type": "string"
+              },
+              "retrieval_method": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "asset_id"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_create_version",
+      "description": "创建素材版本：基于变更说明创建新的素材版本。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "change_summary": {
+            "type": "string"
+          },
+          "change_items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "before": {},
+                "after": {},
+                "tool": {
+                  "type": "string"
+                },
+                "parameters": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "branch_id": {
+            "type": "string"
+          },
+          "parent_version_id": {
+            "type": "string"
+          },
+          "set_as_default": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "asset_id",
+          "file_path",
+          "change_items"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_create_branch",
+      "description": "创建素材分支：从指定素材版本创建分支。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "base_version_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id",
+          "base_version_id",
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_save_copy",
+      "description": "保存受管副本：从既有素材版本保存受管副本。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "source_asset_id": {
+            "type": "string"
+          },
+          "source_version_id": {
+            "type": "string"
+          },
+          "copy_type": {
+            "type": "string",
+            "enum": [
+              "snapshot_copy",
+              "working_copy",
+              "project_copy",
+              "export_copy"
+            ]
+          },
+          "target_project_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_asset_id",
+          "source_version_id",
+          "copy_type"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_lineage",
+      "description": "查看素材谱系：查看素材分支、版本和上下游关系。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_register_derived_file",
+      "description": "登记派生文件：登记缩略图、代理文件、转码、字幕或其他派生文件。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "asset_version_id": {
+            "type": "string"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "derivative_type": {
+            "type": "string",
+            "enum": [
+              "thumbnail",
+              "proxy",
+              "transcode",
+              "audio_proxy",
+              "subtitle",
+              "waveform",
+              "contact_sheet",
+              "metadata",
+              "other"
+            ]
+          },
+          "profile": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "asset_id",
+          "asset_version_id",
+          "file_path",
+          "derivative_type"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_generate_derived_file",
+      "description": "生成派生文件：生成缩略图或代理文件并登记为派生文件。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "asset_version_id": {
+            "type": "string"
+          },
+          "derivative_type": {
+            "type": "string",
+            "enum": [
+              "thumbnail",
+              "proxy",
+              "transcode"
+            ]
+          },
+          "profile": {
+            "type": "string"
+          },
+          "width": {
+            "type": "number"
+          },
+          "crf": {
+            "type": "number"
+          },
+          "preset": {
+            "type": "string",
+            "enum": [
+              "ultrafast",
+              "superfast",
+              "veryfast",
+              "faster",
+              "fast",
+              "medium",
+              "slow",
+              "slower",
+              "veryslow"
+            ]
+          },
+          "seek_seconds": {
+            "type": "number"
+          },
+          "max_duration_seconds": {
+            "type": "number"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "asset_version_id"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_derived_files",
+      "description": "列出派生文件：列出素材或素材版本的派生文件。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "asset_version_id": {
+            "type": "string"
+          },
+          "derivative_type": {
+            "type": "string",
+            "enum": [
+              "thumbnail",
+              "proxy",
+              "transcode",
+              "audio_proxy",
+              "subtitle",
+              "waveform",
+              "contact_sheet",
+              "metadata",
+              "other"
+            ]
+          },
+          "include_inactive": {
+            "type": "boolean"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "video_asset_integrity_scan",
+      "description": "扫描素材库完整性：扫描素材元数据、源文件、派生文件和项目引用完整性。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "deep": {
+            "type": "boolean"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "video_asset_classify",
+      "description": "标注素材分类：使用受控生产分类体系标注素材或素材版本。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "asset_version_id": {
+            "type": "string"
+          },
+          "domain": {
+            "type": "string",
+            "enum": [
+              "character",
+              "scene",
+              "costume",
+              "prop",
+              "audio",
+              "reference",
+              "prompt",
+              "document",
+              "delivery",
+              "other"
+            ]
+          },
+          "type": {
+            "type": "string"
+          },
+          "subtype": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "confirmed",
+              "candidate",
+              "inferred"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "agent",
+              "import",
+              "migration"
+            ]
+          }
+        },
+        "required": [
+          "asset_id",
+          "domain",
+          "type"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_get_classification",
+      "description": "读取素材分类：读取素材分类和实体关联。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "asset_version_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_taxonomy_report",
+      "description": "生成分类连续性报告：扫描素材库中的分类、实体关联和关键批注缺口。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "include_archived": {
+            "type": "boolean"
+          },
+          "limit": {
+            "type": "number"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "video_entity_create",
+      "description": "创建制作实体：创建角色、场景、服装、道具等制作实体。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "entity_key": {
+            "type": "string"
+          },
+          "entity_type": {
+            "type": "string",
+            "enum": [
+              "character",
+              "scene",
+              "costume",
+              "prop",
+              "organization",
+              "style",
+              "other"
+            ]
+          },
+          "canonical_name": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "active",
+              "locked",
+              "archived"
+            ]
+          }
+        },
+        "required": [
+          "entity_key",
+          "entity_type",
+          "canonical_name"
+        ]
+      }
+    },
+    {
+      "name": "video_entity_search",
+      "description": "搜索制作实体：按键名、名称、别名、类型或项目搜索制作实体。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "entity_type": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100000
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "video_entity_link_asset",
+      "description": "关联实体与素材：把素材或素材版本关联到制作实体。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "asset_version_id": {
+            "type": "string"
+          },
+          "entity_id": {
+            "type": "string"
+          },
+          "entity_key": {
+            "type": "string"
+          },
+          "relation_type": {
+            "type": "string",
+            "enum": [
+              "depicts",
+              "costume_for",
+              "prop_for",
+              "scene_for",
+              "style_for",
+              "voice_for",
+              "reference_for"
+            ]
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "confirmed",
+              "candidate",
+              "inferred"
+            ]
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id",
+          "relation_type"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_annotate",
+      "description": "添加素材批注：向素材、素材版本、实体或项目引用添加结构化批注。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "target_type": {
+            "type": "string",
+            "enum": [
+              "asset",
+              "asset_version",
+              "entity",
+              "project_ref"
+            ]
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "annotation_type": {
+            "type": "string",
+            "enum": [
+              "character_profile",
+              "scene_concept",
+              "costume_spec",
+              "prop_function",
+              "visual_continuity",
+              "source_rights",
+              "production_note",
+              "review_note",
+              "prompt_note",
+              "other"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "structured": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "internal",
+              "project",
+              "public_summary"
+            ]
+          }
+        },
+        "required": [
+          "target_type",
+          "target_id",
+          "annotation_type",
+          "title",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_annotations",
+      "description": "列出素材批注：列出指定对象的结构化批注。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "target_type": {
+            "type": "string",
+            "enum": [
+              "asset",
+              "asset_version",
+              "entity",
+              "project_ref"
+            ]
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "include_archived": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "target_type",
+          "target_id"
+        ]
+      }
+    },
+    {
+      "name": "video_asset_update_annotation",
+      "description": "更新素材批注：更新既有批注或调整批注状态。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "annotation_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "structured": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "active",
+              "superseded",
+              "resolved",
+              "archived"
+            ]
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "internal",
+              "project",
+              "public_summary"
+            ]
+          }
+        },
+        "required": [
+          "annotation_id"
+        ]
+      }
+    },
+    {
+      "name": "video_project_create",
+      "description": "创建视频项目：创建视频项目记录。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "target_platforms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "aspect_ratio": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "fps": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      }
+    },
+    {
+      "name": "video_project_update_spec",
+      "description": "更新项目规格：更新项目输出规格，用于CLI生成及交付。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "target_platforms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "aspect_ratio": {
+            "type": "string"
+          },
+          "resolution": {
+            "type": "string"
+          },
+          "fps": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "video_project_add_asset_ref",
+      "description": "添加项目素材引用：向项目添加素材版本引用。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "asset_id": {
+            "type": "string"
+          },
+          "asset_version_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "usage_scope": {
+            "type": "string"
+          },
+          "pin_mode": {
+            "type": "string",
+            "enum": [
+              "pinned",
+              "follow_latest",
+              "candidate"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "asset_id"
+        ]
+      }
+    },
+    {
+      "name": "video_project_update_asset_ref",
+      "description": "更新项目素材引用：更新既有项目素材引用。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reference_id": {
+            "type": "string"
+          },
+          "asset_id": {
+            "type": "string"
+          },
+          "asset_version_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "usage_scope": {
+            "type": "string"
+          },
+          "pin_mode": {
+            "type": "string",
+            "enum": [
+              "pinned",
+              "follow_latest",
+              "candidate"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference_id"
+        ]
+      }
+    },
+    {
+      "name": "video_project_remove_asset_ref",
+      "description": "移除项目素材引用：软移除项目素材引用。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reference_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference_id"
+        ]
+      }
+    },
+    {
+      "name": "video_project_refs",
+      "description": "列出项目素材引用：列出项目素材引用。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "video_project_asset_report",
+      "description": "生成项目素材报告：生成项目素材依赖和风险报告。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "video_project_continuity_report",
+      "description": "生成项目连续性报告：检查项目分类、实体关联和批注连续性风险。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "research",
+              "production",
+              "review",
+              "delivery"
+            ]
+          }
+        },
+        "required": [
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "video_audio_doubao_plan",
+      "description": "生成豆包音频请求计划：构建豆包音频生成 1.0 标准请求包，不调用模型，不消耗成本。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "prompt_text": {
+            "type": "string"
+          },
+          "video_linkage_block": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "model_id": {
+            "type": "string"
+          },
+          "api_model_id": {
+            "type": "string"
+          },
+          "adapter_version": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "char_limit": {
+            "type": "number"
+          },
+          "duration_seconds": {
+            "type": "number"
+          },
+          "output_format": {
+            "type": "string",
+            "enum": [
+              "wav",
+              "mp3",
+              "pcm",
+              "ogg_opus"
+            ]
+          },
+          "sample_rate": {
+            "type": "number"
+          },
+          "speech_rate": {
+            "type": "number"
+          },
+          "loudness_rate": {
+            "type": "number"
+          },
+          "pitch_rate": {
+            "type": "number"
+          },
+          "enable_subtitle": {
+            "type": "boolean"
+          },
+          "channels": {
+            "type": "number"
+          },
+          "seed": {
+            "type": "number"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "api"
+            ]
+          },
+          "execute": {
+            "type": "boolean"
+          },
+          "accept_cost": {
+            "type": "boolean"
+          },
+          "accept_credit_spend": {
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "type": "number"
+          },
+          "output_dir": {
+            "type": "string"
+          },
+          "download_outputs": {
+            "type": "boolean"
+          },
+          "ingest_outputs": {
+            "type": "boolean"
+          },
+          "output_title": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "raw",
+              "working"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "voices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "timeline": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "sound_layers": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "speaker": {
+                  "type": "string"
+                },
+                "audio_data": {
+                  "type": "string"
+                },
+                "audio_url": {
+                  "type": "string"
+                },
+                "image_data": {
+                  "type": "string"
+                },
+                "image_url": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "audio_config": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "wav",
+                  "mp3",
+                  "pcm",
+                  "ogg_opus"
+                ]
+              },
+              "sample_rate": {
+                "type": "number"
+              },
+              "speech_rate": {
+                "type": "number"
+              },
+              "loudness_rate": {
+                "type": "number"
+              },
+              "pitch_rate": {
+                "type": "number"
+              },
+              "enable_subtitle": {
+                "type": "boolean"
+              }
+            }
+          },
+          "watermark": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "aigc_watermark": {
+                "type": "boolean"
+              },
+              "aigc_metadata": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enable": {
+                    "type": "boolean"
+                  },
+                  "content_producer": {
+                    "type": "string"
+                  },
+                  "produce_id": {
+                    "type": "string"
+                  },
+                  "content_propagator": {
+                    "type": "string"
+                  },
+                  "propagate_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "provider_parameters": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "classification": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "project_ref": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "actor_id": {
+            "type": "string"
+          },
+          "actor_type": {
+            "type": "string"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "video_audio_doubao_generate",
+      "description": "执行豆包音频生成：执行豆包音频生成，平台审核通过后入库（授权默认 unknown）",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "prompt_text": {
+            "type": "string"
+          },
+          "video_linkage_block": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "model_id": {
+            "type": "string"
+          },
+          "api_model_id": {
+            "type": "string"
+          },
+          "adapter_version": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "char_limit": {
+            "type": "number"
+          },
+          "duration_seconds": {
+            "type": "number"
+          },
+          "output_format": {
+            "type": "string",
+            "enum": [
+              "wav",
+              "mp3",
+              "pcm",
+              "ogg_opus"
+            ]
+          },
+          "sample_rate": {
+            "type": "number"
+          },
+          "speech_rate": {
+            "type": "number"
+          },
+          "loudness_rate": {
+            "type": "number"
+          },
+          "pitch_rate": {
+            "type": "number"
+          },
+          "enable_subtitle": {
+            "type": "boolean"
+          },
+          "channels": {
+            "type": "number"
+          },
+          "seed": {
+            "type": "number"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "api"
+            ]
+          },
+          "execute": {
+            "type": "boolean"
+          },
+          "accept_cost": {
+            "type": "boolean"
+          },
+          "accept_credit_spend": {
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "type": "number"
+          },
+          "output_dir": {
+            "type": "string"
+          },
+          "download_outputs": {
+            "type": "boolean"
+          },
+          "ingest_outputs": {
+            "type": "boolean"
+          },
+          "output_title": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "raw",
+              "working"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "voices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "timeline": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "sound_layers": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "references": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "speaker": {
+                  "type": "string"
+                },
+                "audio_data": {
+                  "type": "string"
+                },
+                "audio_url": {
+                  "type": "string"
+                },
+                "image_data": {
+                  "type": "string"
+                },
+                "image_url": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "audio_config": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "format": {
+                "type": "string",
+                "enum": [
+                  "wav",
+                  "mp3",
+                  "pcm",
+                  "ogg_opus"
+                ]
+              },
+              "sample_rate": {
+                "type": "number"
+              },
+              "speech_rate": {
+                "type": "number"
+              },
+              "loudness_rate": {
+                "type": "number"
+              },
+              "pitch_rate": {
+                "type": "number"
+              },
+              "enable_subtitle": {
+                "type": "boolean"
+              }
+            }
+          },
+          "watermark": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "aigc_watermark": {
+                "type": "boolean"
+              },
+              "aigc_metadata": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enable": {
+                    "type": "boolean"
+                  },
+                  "content_producer": {
+                    "type": "string"
+                  },
+                  "produce_id": {
+                    "type": "string"
+                  },
+                  "content_propagator": {
+                    "type": "string"
+                  },
+                  "propagate_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "provider_parameters": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "classification": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "project_ref": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "actor_id": {
+            "type": "string"
+          },
+          "actor_type": {
+            "type": "string"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "video_audio_kie_suno_plan",
+      "description": "生成 KIE Suno 请求计划：构建 KIE Suno API 音乐/歌曲生成请求包，不提交任务。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "scene": {
+            "type": "string"
+          },
+          "shot_id": {
+            "type": "string"
+          },
+          "timecode": {
+            "type": "string"
+          },
+          "target_duration": {
+            "type": "string"
+          },
+          "duration_seconds": {
+            "type": "number"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "V4",
+              "V4_5",
+              "V4_5PLUS",
+              "V4_5ALL",
+              "V5",
+              "V5_5"
+            ]
+          },
+          "customMode": {
+            "type": "boolean"
+          },
+          "instrumental": {
+            "type": "boolean"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "lyrics": {
+            "type": "string"
+          },
+          "style": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "output_title": {
+            "type": "string"
+          },
+          "negativeTags": {
+            "type": "string"
+          },
+          "negative_tags": {
+            "type": "string"
+          },
+          "callBackUrl": {
+            "type": "string"
+          },
+          "callback_url": {
+            "type": "string"
+          },
+          "vocalGender": {
+            "type": "string",
+            "enum": [
+              "m",
+              "f"
+            ]
+          },
+          "track_role": {
+            "type": "string",
+            "enum": [
+              "music",
+              "song",
+              "instrumental",
+              "vocal",
+              "stem",
+              "wav",
+              "lyrics",
+              "mv",
+              "reference",
+              "test"
+            ]
+          },
+          "dialogue_priority": {
+            "type": "string"
+          },
+          "mix_priority": {
+            "type": "string"
+          },
+          "downstream_target": {
+            "type": "string"
+          },
+          "review_notes": {
+            "type": "string"
+          },
+          "input_rights": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "cleared",
+              "restricted",
+              "rejected"
+            ]
+          },
+          "output_rights": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "cleared",
+              "restricted",
+              "rejected"
+            ]
+          },
+          "speaker_or_voice_consent": {
+            "type": "string"
+          },
+          "rights_notes": {
+            "type": "string"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "api"
+            ]
+          },
+          "execute": {
+            "type": "boolean"
+          },
+          "accept_cost": {
+            "type": "boolean"
+          },
+          "accept_credit_spend": {
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "type": "number"
+          },
+          "poll_result": {
+            "type": "boolean"
+          },
+          "poll_interval_seconds": {
+            "type": "number"
+          },
+          "output_dir": {
+            "type": "string"
+          },
+          "download_outputs": {
+            "type": "boolean"
+          },
+          "ingest_outputs": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "raw",
+              "working"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "classification": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "project_ref": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "provider_parameters": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "actor_id": {
+            "type": "string"
+          },
+          "actor_type": {
+            "type": "string"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "video_audio_kie_suno_generate",
+      "description": "执行 KIE Suno 生成：执行 KIE Suno API 音乐/歌曲生成，下载后按授权未知状态入库。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "endpoint": {
+            "type": "string"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "scene": {
+            "type": "string"
+          },
+          "shot_id": {
+            "type": "string"
+          },
+          "timecode": {
+            "type": "string"
+          },
+          "target_duration": {
+            "type": "string"
+          },
+          "duration_seconds": {
+            "type": "number"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string",
+            "enum": [
+              "V4",
+              "V4_5",
+              "V4_5PLUS",
+              "V4_5ALL",
+              "V5",
+              "V5_5"
+            ]
+          },
+          "customMode": {
+            "type": "boolean"
+          },
+          "instrumental": {
+            "type": "boolean"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "lyrics": {
+            "type": "string"
+          },
+          "style": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "output_title": {
+            "type": "string"
+          },
+          "negativeTags": {
+            "type": "string"
+          },
+          "negative_tags": {
+            "type": "string"
+          },
+          "callBackUrl": {
+            "type": "string"
+          },
+          "callback_url": {
+            "type": "string"
+          },
+          "vocalGender": {
+            "type": "string",
+            "enum": [
+              "m",
+              "f"
+            ]
+          },
+          "track_role": {
+            "type": "string",
+            "enum": [
+              "music",
+              "song",
+              "instrumental",
+              "vocal",
+              "stem",
+              "wav",
+              "lyrics",
+              "mv",
+              "reference",
+              "test"
+            ]
+          },
+          "dialogue_priority": {
+            "type": "string"
+          },
+          "mix_priority": {
+            "type": "string"
+          },
+          "downstream_target": {
+            "type": "string"
+          },
+          "review_notes": {
+            "type": "string"
+          },
+          "input_rights": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "cleared",
+              "restricted",
+              "rejected"
+            ]
+          },
+          "output_rights": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "cleared",
+              "restricted",
+              "rejected"
+            ]
+          },
+          "speaker_or_voice_consent": {
+            "type": "string"
+          },
+          "rights_notes": {
+            "type": "string"
+          },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "api"
+            ]
+          },
+          "execute": {
+            "type": "boolean"
+          },
+          "accept_cost": {
+            "type": "boolean"
+          },
+          "accept_credit_spend": {
+            "type": "boolean"
+          },
+          "timeout_ms": {
+            "type": "number"
+          },
+          "poll_result": {
+            "type": "boolean"
+          },
+          "poll_interval_seconds": {
+            "type": "number"
+          },
+          "output_dir": {
+            "type": "string"
+          },
+          "download_outputs": {
+            "type": "boolean"
+          },
+          "ingest_outputs": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "raw",
+              "working"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "classification": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "project_ref": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "provider_parameters": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "actor_id": {
+            "type": "string"
+          },
+          "actor_type": {
+            "type": "string"
+          }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "video_novel_document",
+      "description": "小说叙事文档：项目内保存草稿、读取历史与差异；通过授权工具审定固定版本。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "list",
+              "get",
+              "save",
+              "history",
+              "diff",
+              "approve",
+              "reject"
+            ]
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "document_key": {
+            "type": "string"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "snapshot_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "bible",
+              "character",
+              "timeline",
+              "foreshadow",
+              "volume",
+              "chapter",
+              "review",
+              "adaptation"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "expected_head": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "change_summary": {
+            "type": "string"
+          },
+          "volume_order": {
+            "type": "number"
+          },
+          "chapter_order": {
+            "type": "number"
+          },
+          "from_revision_id": {
+            "type": "string"
+          },
+          "to_revision_id": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "offset": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "project_id",
+          "op"
+        ]
+      }
+    },
+    {
+      "name": "video_novel_workflow",
+      "description": "小说工作流：组装审定上下文快照、查询资源、改稿影响、审稿记录及 TXT/MD/EPUB 导出。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "context",
+              "sources",
+              "snapshot",
+              "impact",
+              "review",
+              "reviews",
+              "export",
+              "exports"
+            ]
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "document_key": {
+            "type": "string"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "snapshot_id": {
+            "type": "string"
+          },
+          "reference_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "max_chars": {
+            "type": "number"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "txt",
+              "md",
+              "epub"
+            ]
+          },
+          "revision_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "project_id",
+          "op"
+        ]
+      }
+    },
+    {
+      "name": "video_novel_adaptation",
+      "description": "小说—动画映射：固定章节与共享设定版本，记录场次动机、因果、情绪、动作和对白交接。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "get",
+              "save",
+              "lint",
+              "handoff"
+            ]
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "document_key": {
+            "type": "string"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "snapshot_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "chapter_revision_id": {
+            "type": "string"
+          },
+          "expected_head": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mapping": {
+            "type": "object",
+            "properties": {
+              "scene_goal": {
+                "type": "string"
+              },
+              "motivation": {
+                "type": "string"
+              },
+              "causality": {
+                "type": "string"
+              },
+              "emotion": {
+                "type": "string"
+              },
+              "boundaries": {
+                "type": "string"
+              },
+              "visible_action": {
+                "type": "string"
+              },
+              "dialogue": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "scene_goal",
+              "motivation",
+              "causality",
+              "emotion",
+              "boundaries",
+              "visible_action",
+              "dialogue"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "project_id",
+          "op"
+        ]
+      }
+    },
+    {
+      "name": "video_novel_generate",
+      "description": "独立文本模型任务：计划、执行、状态、用量、合入草稿和人工对账；付费默认关闭且受独立货币预算守卫。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "op": {
+            "type": "string",
+            "enum": [
+              "plan",
+              "execute",
+              "list",
+              "status",
+              "usage",
+              "commit",
+              "cancel",
+              "reconcile"
+            ]
+          },
+          "document_id": {
+            "type": "string"
+          },
+          "document_key": {
+            "type": "string"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "snapshot_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "job_key": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "planner",
+              "writer",
+              "reviewer",
+              "state_extractor"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "bible",
+              "character",
+              "timeline",
+              "foreshadow",
+              "volume",
+              "chapter",
+              "review"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "volume_order": {
+            "type": "number"
+          },
+          "chapter_order": {
+            "type": "number"
+          },
+          "instruction": {
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "type": "number"
+          },
+          "expected_head": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "accept_cost": {
+            "type": "boolean"
+          },
+          "actual_amount": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "project_id",
+          "op"
+        ]
+      }
+    },
+    {
+      "name": "video_dreamina_cli",
+      "description": "独立 Dreamina CLI：版本/help/积分/会话/任务查询、图像视频生成与放大；无需内部画布。默认只计划，execute=true 执行；付费受可信身份、显式确认、预算与幂等门控制。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Canonical CLI command path, e.g. version, text2image, model list, node create image, operation status. Use command=help to discover."
+          },
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "CLI arguments, one token per item; never shell text. Do not include the executable or command path."
+          },
+          "execute": {
+            "type": "boolean",
+            "description": "Default false returns a zero-I/O plan. True executes the selected CLI command."
+          },
+          "operation_key": {
+            "type": "string",
+            "description": "Required for mutations/paid submissions; reuse on uncertain outcomes to prevent duplicate submission."
+          },
+          "accept_credit_spend": {
+            "type": "boolean",
+            "description": "Explicit consent for paid generation or credit approval. Does not replace plugin budget policy or provider approval."
+          },
+          "confirm_destructive": {
+            "type": "boolean",
+            "description": "Explicit confirmation for provider node/session deletion or logout."
+          },
+          "timeout_ms": {
+            "type": "number",
+            "description": "Bounded process timeout, 1000..120000 ms. Timeout after mutation is uncertain; never automatically resubmit."
+          },
+          "profile": {
+            "type": "string",
+            "description": "Official canvas CLI profile only; no mixing with legacy CLI credentials."
+          },
+          "region": {
+            "type": "string",
+            "description": "Official canvas CLI region only, if explicitly selected."
+          }
+        },
+        "required": [
+          "command"
+        ]
+      }
+    },
+    {
+      "name": "video_dreamina_canvas_cli",
+      "description": "官方即梦画布 CLI：schema/model/voice、认证、云画布、节点、资源与操作恢复；无需任何前端。参数以实时 schema 为准，默认只计划；生成和积分批准需确认，写操作须稳定 operation_key。",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Canonical CLI command path, e.g. version, text2image, model list, node create image, operation status. Use command=help to discover."
+          },
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "CLI arguments, one token per item; never shell text. Do not include the executable or command path."
+          },
+          "execute": {
+            "type": "boolean",
+            "description": "Default false returns a zero-I/O plan. True executes the selected CLI command."
+          },
+          "operation_key": {
+            "type": "string",
+            "description": "Required for mutations/paid submissions; reuse on uncertain outcomes to prevent duplicate submission."
+          },
+          "accept_credit_spend": {
+            "type": "boolean",
+            "description": "Explicit consent for paid generation or credit approval. Does not replace plugin budget policy or provider approval."
+          },
+          "confirm_destructive": {
+            "type": "boolean",
+            "description": "Explicit confirmation for provider node/session deletion or logout."
+          },
+          "timeout_ms": {
+            "type": "number",
+            "description": "Bounded process timeout, 1000..120000 ms. Timeout after mutation is uncertain; never automatically resubmit."
+          },
+          "profile": {
+            "type": "string",
+            "description": "Official canvas CLI profile only; no mixing with legacy CLI credentials."
+          },
+          "region": {
+            "type": "string",
+            "description": "Official canvas CLI region only, if explicitly selected."
+          }
+        },
+        "required": [
+          "command"
+        ]
+      }
+    }
+  ]
+}

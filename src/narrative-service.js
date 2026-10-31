@@ -88,7 +88,7 @@ export class NarrativeService {
     const c = trustedContextOf(input);
     const allowed = c?.trusted && ["browser", "gateway"].includes(c.surface) &&
       (c.scopes?.includes("operator.write") || c.scopes?.includes("operator.admin"));
-    if (!allowed) throw novelError("HUMAN_APPROVAL_REQUIRED", "审定必须从已认证的人类工作台或操作员接口提交", 403);
+    if (!allowed) throw novelError("HUMAN_APPROVAL_REQUIRED", "审定必须从已认证的人类操作员RPC提交", 403);
   }
   audit(input, action, target, changes = {}) {
     const actor = this.actor(input);

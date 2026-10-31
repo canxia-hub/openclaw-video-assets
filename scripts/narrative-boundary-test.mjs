@@ -1,94 +1,22 @@
-import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import http from "node:http";
-import * as loader from "node:module";
-import { installSdkAliasHooks } from "./fixtures/sdk-alias-hooks.mjs";
-import { createHostApiStub } from "./fixtures/host-api-stub.mjs";
-import { hashPassword } from "../src/security.js";
-
-installSdkAliasHooks(loader);
-process.env.OPENCLAW_COMPATIBILITY_HOST_VERSION = "2026.9.7";
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "ova-narrative-boundary-"));
-const basePath = "/__openclaw__/video-assets";
-const password = "isolated-narrative-boundary-test";
-let api;
-const server = http.createServer(async (req, res) => {
-  const pathname = new URL(req.url, "http://127.0.0.1").pathname;
-  const route = api.httpRoutes.filter(r => r.match === "prefix" ? pathname.startsWith(r.path) : pathname === r.path)
-    .sort((a, b) => b.path.length - a.path.length)[0];
-  if (!route) { res.writeHead(404); res.end("Not found"); return; }
-  try { await route.handler(req, res); }
-  catch (error) { res.writeHead(500); res.end(String(error.message)); }
-});
-await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-const origin = "http://127.0.0.1:" + server.address().port;
-const entry = await import("../src/index.js");
-api = createHostApiStub({
-  pluginConfig: {
-    repositoryRoot: root, auth: { enabled: true, adminPasswordHash: await hashPassword(password) },
-    security: { allowedOrigins: [origin] }, generationJobs: { providerAdapter: "none" }
-  }, registrationMode: "full"
-});
-const results = [];
-let service;
-let cookie;
-// Use direct loopback HTTP; machine-wide outbound proxies must not intercept fixture sessions.
-function localHttp(url, { method = "GET", headers = {}, body } = {}) {
-  const target = new URL(url);
-  assert.equal(target.origin, origin);
-  return new Promise((resolve, reject) => {
-    const req = http.request(target, { method, headers, agent: new http.Agent({ proxyEnv: { ...process.env, NO_PROXY: "127.0.0.1" } }) }, res => {
-      const chunks = [];
-      res.on("data", chunk => chunks.push(chunk));
-      res.on("error", reject);
-      res.on("end", () => {
-        const bytes = Buffer.concat(chunks);
-        resolve({ status: res.statusCode,
-          headers: { get: name => Array.isArray(res.headers[name]) ? res.headers[name][0] : res.headers[name] },
-          json: async () => JSON.parse(bytes.toString("utf8")), arrayBuffer: async () => bytes });
-      });
-    });
-    req.on("error", reject);
-    req.end(body);
-  });
-}
-async function request(method, params, authenticated = true) {
-  const response = await localHttp(origin + basePath + "/rpc/", {
-    method: "POST", headers: { "Content-Type": "application/json", Origin: origin,
-      ...(authenticated && cookie ? { Cookie: cookie } : {}) },
-    body: JSON.stringify({ method, params })
-  });
-  return { status: response.status, body: await response.json() };
-}
-async function rpc(method, params) {
-  const response = await request(method, params);
-  assert.equal(response.status, 200, JSON.stringify(response.body));
-  assert.equal(response.body.ok, true, JSON.stringify(response.body));
-  return response.body.result;
-}
+import assert from "node:assert/strict";import fs from "node:fs";import os from "node:os";import path from "node:path";
+import {VideoAssetService} from "../src/service.js";import {narrativeRpc} from "../src/narrative-contract.js";import {withTrustedContext,buildTrustedContext} from "../src/provider-gateway.js";
+const root=fs.mkdtempSync(path.join(os.tmpdir(),"ova-narrative-headless-boundary-"));
+const service=new VideoAssetService({pluginConfig:{repositoryRoot:root}}).init();
+const handlers=narrativeRpc(service),results=[];
+const context=buildTrustedContext({surface:"gateway",actorId:"human:test",actorType:"human",trusted:true,source:"isolated-host",scopes:["operator.write"]});
+async function request(method,params){try{const result=await handlers["videoAssets."+method].handler(withTrustedContext(params,context));return{status:200,body:{ok:true,result}};}catch(e){return{status:e.status??400,body:{ok:false,code:e.code,error:e.message}};}}
+async function rpc(method,params){const r=await request(method,params);assert.equal(r.status,200,JSON.stringify(r.body));return r.body.result;}
 async function check(name, fn) {
   try { await fn(); results.push({ name, passed: true }); console.log("PASS " + name); }
   catch (error) { results.push({ name, passed: false, error: error.message }); console.log("FAIL " + name + ": " + error.message); }
 }
 try {
-  entry.default.register(api);
-  service = entry.getPluginService();
-  // Fixture setup only; all narrative assertions are driven through the authenticated HTTP route.
+  // Business boundary assertions use headless RPC dispatch, not a web server.
   const project_id = service.createProject({ title: "Narrative HTTP boundary fixture" }).project_id;
   const params = value => ({ project_id, ...value });
   const doc = value => rpc("novel.document.write", params(value));
   const flow = value => rpc("novel.workflow.write", params(value));
-  await check("anonymous narrative HTTP requests are rejected", async () => {
-    assert.equal((await request("novel.document.read", params({ op: "list" }), false)).status, 401);
-  });
-  const login = await localHttp(origin + basePath + "/auth/login", {
-    method: "POST", headers: { "Content-Type": "application/json", Origin: origin },
-    body: JSON.stringify({ password })
-  });
-  assert.equal(login.status, 200);
-  cookie = login.headers.get("set-cookie").split(";")[0];
+  await check("read-only RPC cannot write documents",async()=>{const r=await request("novel.document.read",params({op:"save"}));assert.equal(r.status,403);assert.equal(r.body.code,"OPERATION_SCOPE_MISMATCH");});
   const bible = await doc({ op: "save", document_key: "bible", kind: "bible", title: "Canon",
     body: "The protagonist repairs doors but cannot create them.", expected_head: null });
   await doc({ op: "approve", document_id: bible.document_id, expected_head: bible.revision_id });
@@ -115,7 +43,7 @@ try {
     assert.equal(handoff.ready, true);
     assert.equal(handoff.source_chapter.revision_id, first.revision_id);
   });
-  await check("HTTP nested mapping cannot override its pinned source chapter", async () => {
+  await check("headless nested mapping cannot override its pinned source chapter", async () => {
     const response = await request("novel.adaptation.write", params({ ...adaptationBase,
       document_key: "adaptation:override", mapping: { ...mapping, chapter_revision_id: second.revision_id } }));
     assert.equal(response.status, 400, "mapping source override was accepted");
@@ -160,9 +88,8 @@ try {
     }
     assert.equal((await rpc("novel.workflow.read", params({ op: "exports" }))).length, before.length);
     assert.ok(before.length > 0);
-    const previous = await localHttp(origin + basePath + "/file/" + priorExport.asset_version_id, { headers: { Cookie: cookie } });
-    assert.equal(previous.status, 200);
-    assert.match(Buffer.from(await previous.arrayBuffer()).toString("utf8"), /First chapter fixture text/);
+    const previous = fs.readFileSync(service.resolveVersionFile(priorExport.asset_version_id).file_path);
+    assert.match(previous.toString("utf8"), /First chapter fixture text/);
   });
   const current = await flow({ op: "context" });
   const refs = await rpc("novel.workflow.read", params({ op: "sources" }));
@@ -185,24 +112,23 @@ try {
     assert.equal(response.body.code, "STALE_SNAPSHOT");
   });
   for (const format of ["txt", "md", "epub"]) {
-    await check("reviewed " + format.toUpperCase() + " export is registered and downloads over HTTP", async () => {
+    await check("reviewed " + format.toUpperCase() + " export is registered and readable locally", async () => {
       const exported = await flow({ op: "export", format, revision_ids: [revised.revision_id] });
-      const download = await localHttp(origin + basePath + "/file/" + exported.asset_version_id, { headers: { Cookie: cookie } });
-      assert.equal(download.status, 200);
-      const bytes = Buffer.from(await download.arrayBuffer());
+      const resolved=service.resolveVersionFile(exported.asset_version_id);
+      const bytes=fs.readFileSync(resolved.file_path);
       assert.ok(bytes.length > 0);
       if (format === "epub") {
-        assert.equal(download.headers.get("content-type"), "application/epub+zip");
+        assert.equal(resolved.mime_type, "application/epub+zip");
         assert.equal(bytes.readUInt32LE(0), 0x04034b50);
       } else assert.match(bytes.toString("utf8"), /A reviewed chapter/);
     });
   }
 } finally {
-  await new Promise(resolve => server.close(resolve));
-  for (const registered of api.services) await registered.stop();
+  service.close();
+  fs.rmSync(root,{recursive:true,force:true});
 }
 const report = { passed: results.filter(r => r.passed).length, failed: results.filter(r => !r.passed).length,
-  results, real_provider_calls: 0, surface: "authenticated HTTP using production plugin entry with isolated host fixture",
+  results, real_provider_calls: 0, surface: "headless narrative RPC business boundary with trusted host fixture",
   gateway_loader_verified: false, root };
 const reportIndex = process.argv.indexOf("--report");
 if (reportIndex >= 0) fs.writeFileSync(process.argv[reportIndex + 1], JSON.stringify(report, null, 2) + "\n");

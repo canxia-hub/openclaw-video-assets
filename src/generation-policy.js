@@ -272,48 +272,8 @@ export const GENERATION_DENIAL_CODES = Object.freeze({
  * issue exactly one call.
  */
 export const GENERATION_ENTRY_POLICY = Object.freeze({
-  "novel.text.generate": Object.freeze({ provider: "novel_text", cost_unit: "currency", cost_evidence: "operator-price-snapshot", provider_calls_max: 1, description: "独立文本模型；叙事币种账本与动画积分完全分离", tools: ["video_novel_generate"], rpc: ["videoAssets.novel.generation.write"], browser: ["videoAssets.novel.generation.write"], browser_aliases: ["novel.generation.write"] }),
-  "dreamina.video.generate": Object.freeze({
-    provider: "dreamina_cli",
-    cost_unit: "credit",
-    reference_estimate_credits: 100,
-    cost_evidence: "unverified-reference",
-    // REN-11 fix round (D3): budget sized for the real tool-surface sequence of one paid operation -
-    // credit preflight (1) + submit (1) + up to 5 read-only `query_result` convergence calls + credit
-    // recheck (1). Without the headroom the convergence query would be refused as
-    // GENERATION_AUTHORIZATION_EXHAUSTED, which would hide the submit id the convergence exists to keep.
-    provider_calls_max: 9,
-    description: "即梦/Seedance 视频生成（图生视频、文生视频、多模态视频）",
-    tools: ["video_canvas_dreamina_cli_generate_video"],
-    rpc: ["videoAssets.canvas.dreaminaCliGenerateVideo"],
-    browser: [],
-    browser_aliases: []
-  }),
-  "dreamina.image.generate": Object.freeze({
-    provider: "dreamina_cli",
-    cost_unit: "credit",
-    reference_estimate_credits: 8,
-    cost_evidence: "unverified-reference",
-    provider_calls_max: 9,
-    description: "即梦/Seedream 图像生成",
-    tools: ["video_canvas_dreamina_cli_generate_image"],
-    rpc: [],
-    browser: [],
-    browser_aliases: []
-  }),
-  "dreamina.image.upscale": Object.freeze({
-    provider: "dreamina_cli",
-    cost_unit: "credit",
-    reference_estimate_credits: 8,
-    cost_evidence: "unverified-reference",
-    provider_calls_max: 9,
-    description: "即梦图像放大（image_upscale）",
-    tools: ["video_canvas_dreamina_cli_upscale_image"],
-    rpc: [],
-    browser: [],
-    browser_aliases: []
-  }),
-  "audio.doubao.generate": Object.freeze({
+"novel.text.generate": Object.freeze({ provider: "novel_text", cost_unit: "currency", cost_evidence: "operator-price-snapshot", provider_calls_max: 1, description: "独立文本模型；叙事币种账本与动画积分完全分离", tools: ["video_novel_generate"], rpc: ["videoAssets.novel.generation.write"], browser: [], browser_aliases: [] }),
+"audio.doubao.generate": Object.freeze({
     provider: "doubao_audio",
     cost_unit: "credit",
     reference_estimate_credits: 20,
@@ -325,19 +285,7 @@ export const GENERATION_ENTRY_POLICY = Object.freeze({
     browser: [],
     browser_aliases: []
   }),
-  "audio.doubao.canvas.generate": Object.freeze({
-    provider: "doubao_audio",
-    cost_unit: "credit",
-    reference_estimate_credits: 20,
-    cost_evidence: "unverified-reference",
-    provider_calls_max: 1,
-    description: "豆包音频生成（画布入口）",
-    tools: ["video_canvas_doubao_audio_generate"],
-    rpc: ["videoAssets.canvas.doubaoAudioGenerate"],
-    browser: [],
-    browser_aliases: []
-  }),
-  "audio.kie.generate": Object.freeze({
+"audio.kie.generate": Object.freeze({
     provider: "kie_suno",
     cost_unit: "credit",
     reference_estimate_credits: 30,
@@ -346,21 +294,11 @@ export const GENERATION_ENTRY_POLICY = Object.freeze({
     description: "KIE Suno 音乐/歌曲生成（项目级入口）",
     tools: ["video_audio_kie_suno_generate"],
     rpc: ["videoAssets.audio.kieSunoGenerate"],
-    browser: ["videoAssets.audio.kieSunoGenerate"],
-    browser_aliases: ["audio.kieSunoGenerate"]
+    browser: [],
+    browser_aliases: []
   }),
-  "audio.kie.canvas.generate": Object.freeze({
-    provider: "kie_suno",
-    cost_unit: "credit",
-    reference_estimate_credits: 30,
-    cost_evidence: "unverified-reference",
-    provider_calls_max: 1,
-    description: "KIE Suno 音乐/歌曲生成（画布入口）",
-    tools: ["video_canvas_kie_suno_audio_generate"],
-    rpc: ["videoAssets.canvas.kieSunoAudioGenerate"],
-    browser: ["videoAssets.canvas.kieSunoAudioGenerate"],
-    browser_aliases: ["canvas.kieSunoAudioGenerate"]
-  })
+"dreamina.cli.execute": Object.freeze({provider:"dreamina_bridge",cost_unit:"credit",cost_evidence:"operator-price-snapshot",provider_calls_max:1,tools:["video_dreamina_cli"],rpc:[],browser: [],browser_aliases: []}),
+"dreamina.canvas.execute": Object.freeze({provider:"dreamina_canvas_cli",cost_unit:"credit",cost_evidence:"operator-price-snapshot",provider_calls_max:1,tools:["video_dreamina_canvas_cli"],rpc:[],browser: [],browser_aliases: []})
 });
 
 /** Entry ids owned by the service layer, mapped to their methods (used by the source-scan check). */

@@ -1,8 +1,8 @@
 {
   "id": "video-assets",
-  "name": "视频资产库",
-  "description": "面向小说与视频生产的项目资产库、叙事工作台、制作画布与生成写回插件。",
-  "version": "0.3.0",
+  "name": "视频资产与CLI",
+  "description": "Agent-only资产后端，独立Dreamina与官方即梦画布CLI；无HTTP工作台、内部画布或Widget。",
+  "version": "0.4.0",
   "contracts": {
     "tools": [
       "video_asset_ingest",
@@ -27,45 +27,6 @@
       "video_asset_annotate",
       "video_asset_annotations",
       "video_asset_update_annotation",
-      "video_canvas_agent_context",
-      "video_canvas_apply_production_template",
-      "video_canvas_create_revision_card",
-      "video_canvas_create_generation_slot",
-      "video_canvas_create",
-      "video_canvas_delete_shape",
-      "video_audio_doubao_generate",
-      "video_audio_doubao_plan",
-      "video_audio_kie_suno_generate",
-      "video_audio_kie_suno_plan",
-      "video_canvas_doubao_audio_generate",
-      "video_canvas_doubao_audio_plan",
-      "video_canvas_kie_suno_audio_generate",
-      "video_canvas_kie_suno_audio_plan",
-      "video_canvas_dreamina_cli_generate_video",
-      "video_canvas_dreamina_cli_generate_image",
-      "video_canvas_dreamina_cli_upscale_image",
-      "video_canvas_dreamina_cli_plan",
-      "video_canvas_export_annotation_brief",
-      "video_canvas_fill_generation_slot",
-      "video_canvas_generation_handoff",
-      "video_canvas_generation_package",
-      "video_canvas_get_selection",
-      "video_canvas_get_view_state",
-      "video_canvas_get",
-      "video_canvas_insert_generated_asset",
-      "video_canvas_link_shapes",
-      "video_canvas_lint",
-      "video_canvas_register_review_annotation",
-      "render_video_assets_canvas_widget",
-      "video_canvas_save_selection",
-      "video_canvas_save_snapshot",
-      "video_canvas_save_view_state",
-      "video_canvas_search",
-      "video_canvas_unlink_shapes",
-      "video_canvas_update_generation_slot",
-      "video_canvas_update_revision_card_status",
-      "video_canvas_upsert_shape",
-      "video_canvas_widget_context",
       "video_project_create",
       "video_project_update_spec",
       "video_project_add_asset_ref",
@@ -74,10 +35,16 @@
       "video_project_refs",
       "video_project_asset_report",
       "video_project_continuity_report",
+      "video_audio_doubao_plan",
+      "video_audio_doubao_generate",
+      "video_audio_kie_suno_plan",
+      "video_audio_kie_suno_generate",
       "video_novel_document",
       "video_novel_workflow",
       "video_novel_adaptation",
-      "video_novel_generate"
+      "video_novel_generate",
+      "video_dreamina_cli",
+      "video_dreamina_canvas_cli"
     ]
   },
   "activation": {
@@ -119,14 +86,9 @@
       "toolSurface": {
         "type": "string",
         "enum": [
-          "legacy",
-          "contract"
+          "agent"
         ],
-        "description": "工具面强制选择；缺省按 manifest contracts.tools 推导。"
-      },
-      "basePath": {
-        "type": "string",
-        "description": "顶层 basePath 回退；security.basePath 优先。"
+        "description": "0.4起只提供无前端Agent工具面。"
       },
       "audio": {
         "type": "object",
@@ -278,114 +240,11 @@
           }
         }
       },
-      "auth": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "面向公网访问时的插件级二次认证；如网关认证可用，仍需保留网关认证。",
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "description": "启用插件密码与会话认证，默认开启。"
-          },
-          "adminPasswordHash": {
-            "type": "string",
-            "description": "由安全管理器生成的密码哈希。不要保存明文密码；本字段仅为兼容保留，本地私有部署优先使用哈希文件。"
-          },
-          "adminPasswordHashFile": {
-            "type": "string",
-            "description": "保存管理员密码哈希的本地私有文件路径，推荐优先使用。"
-          },
-          "sessionTtlMinutes": {
-            "type": "number",
-            "minimum": 5,
-            "description": "插件会话有效时长，单位分钟，默认 480。"
-          },
-          "maxLoginAttempts": {
-            "type": "number",
-            "minimum": 1,
-            "description": "同一登录窗口内每个地址允许的最大失败次数，默认 5。"
-          },
-          "loginWindowMinutes": {
-            "type": "number",
-            "minimum": 1,
-            "description": "登录限流窗口，单位分钟，默认 10。"
-          },
-          "allowedOrigins": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "公网部署时可选的浏览器来源白名单；留空表示依赖网关或代理的来源策略。"
-          }
-        }
-      },
       "security": {
         "type": "object",
         "additionalProperties": false,
-        "description": "REN-02 安全边界：basePath、Origin/CSRF、可信代理、Cookie 与生成授权/成本门控。默认 fail-closed：生成授权在显式配置前一律拒绝；代理头默认不信任；声明部署源后，携带会话 Cookie 的写请求强制校验 Origin。",
+        "description": "可信身份与付费授权／预算门，不提供浏览器会话。",
         "properties": {
-          "basePath": {
-            "type": "string",
-            "description": "插件统一挂载前缀（路由、会话 Cookie Path、工作台 URL 均由此派生）。默认 /__openclaw__/video-assets；改动后需重新构建 ui-src（ui-dist 目前按默认前缀编译）。"
-          },
-          "publicOrigin": {
-            "type": "string",
-            "description": "部署对外源（例如 https://workbench.example.com）。声明后，携带会话 Cookie 的写请求必须携带白名单内 Origin。"
-          },
-          "allowedOrigins": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "额外允许的浏览器来源，与 auth.allowedOrigins 合并。"
-          },
-          "csrfMode": {
-            "type": "string",
-            "enum": [
-              "auto",
-              "strict",
-              "off"
-            ],
-            "description": "auto（默认）：声明部署源后严格校验；strict：即使未声明部署源，携带会话 Cookie 的写请求也必须带合法 Origin；off 仅供隔离回归使用。"
-          },
-          "deriveOriginFromHost": {
-            "type": "boolean",
-            "description": "是否允许按请求 Host 推导同源 Origin（默认 true）。仅在未配置 publicOrigin/allowedOrigins 且 Host 为 loopback/localhost 时生效：显式配置的源永远是权威白名单，请求 Host 不会扩充它，公网域名也不会被隐式信任。"
-          },
-          "enforceCookieCsrf": {
-            "type": "boolean",
-            "description": "是否对携带会话 Cookie 的写请求强制 Origin（默认 true）。Bearer 令牌客户端不受此限制。"
-          },
-          "trustProxyHeaders": {
-            "type": "boolean",
-            "description": "是否信任 X-Forwarded-For / X-Forwarded-Proto（默认 false）。开启后仍需配置 trustedProxies，否则转发头仍被忽略。"
-          },
-          "trustedProxies": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "可信代理地址或 IPv4 CIDR（例如 127.0.0.1、10.0.0.0/8）。只有来自这些地址的请求才能影响客户端 IP 与协议判定。"
-          },
-          "cookieSecure": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "string",
-                "enum": [
-                  "auto"
-                ]
-              }
-            ],
-            "description": "会话 Cookie 的 Secure 属性：auto（默认，按有效协议判定，HTTPS 或可信代理声明 https 时追加）、true（强制）、false（关闭，仅限本地 HTTP 调试）。"
-          },
-          "sessionIdleMinutes": {
-            "type": "number",
-            "minimum": 1,
-            "description": "会话空闲超时（分钟）。配置后空闲超时即失效；不配置则只受绝对 TTL 限制。"
-          },
           "generation": {
             "type": "object",
             "additionalProperties": false,
@@ -501,23 +360,6 @@
                 }
               }
             }
-          }
-        }
-      },
-      "canvas": {
-        "type": "object",
-        "additionalProperties": false,
-        "description": "REN-08 可编辑画布。editing 关掉时服务端拒绝一切画布编辑命令、界面退为只读（回滚开关，不只是界面提示）；viewportDebounceMs 是视口写入的防抖毫秒数，客户端会读到同一个值，服务端不依赖它。",
-        "properties": {
-          "editing": {
-            "type": "boolean",
-            "description": "是否允许画布编辑命令，默认开启。关闭后 canvas.applyCommand 一律拒绝（403），命令日志与快照保留，可回放。"
-          },
-          "viewportDebounceMs": {
-            "type": "number",
-            "minimum": 200,
-            "maximum": 2000,
-            "description": "视口写入防抖毫秒数（默认 400）。会被钳制到 200..2000：0 会让每次平移都写一帧，过长会丢失视图状态。"
           }
         }
       },
@@ -691,6 +533,19 @@
                 }
               }
             }
+          }
+        }
+      },
+      "cli": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "独立CLI可执行文件，仅接受本地可信配置；不依赖内部画布。",
+        "properties": {
+          "dreaminaPath": {
+            "type": "string"
+          },
+          "canvasPath": {
+            "type": "string"
           }
         }
       }
