@@ -12,7 +12,7 @@ description: 虚拟动画工作室项目与素材管理技能。用于创建新�
 本技能管理的 `assets/`、`projects/`、`output/` 是**本地工作区目录**，用于过程组织与文档化；视频资产的**权威库是 video-assets 插件的 asset-repo**（`~\.openclaw-video-assets\asset-repo`，云端 COS 对象库 + SQLite 元数据）。两者关系：
 1. 持久媒体资产（图像/视频/音频/字幕/交付包）的**最终归宿**是插件 asset-repo 的资产链（asset / version / source / rights / taxonomy / project_ref），本地目录只是**工作区暂存与项目文档层**。
 2. 本技能维护的 assets-map、素材信息卡是**索引与说明**，不是第二真相源：与插件库冲突时，以插件库为准。
-3. 凡持久产出，完成后必须入库（video_asset_ingest / video_canvas_insert_generated_asset 等）并保留索引记录；不得长期以裸文件形式散落在 output 或 assets。
+3. 凡持久产出，完成后必须入库（video_asset_ingest + video_project_add_asset_ref）并保留索引记录；CLI 操作使用 video_dreamina_cli 或 video_dreamina_canvas_cli，不要求内部画布或前端；不得长期以裸文件形式散落在 output 或 assets。
 
 ## When to Use This Skill
 - 需要创建新视频项目时

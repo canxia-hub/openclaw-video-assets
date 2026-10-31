@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 — 2026-10-31
+
+- Replace internal canvas/Workbench/Widget with Agent-only runtime; zero HTTP registrations.
+- Add independent video_dreamina_cli and video_dreamina_canvas_cli tools with live-schema discovery, trusted execution, budget gates and durable idempotency.
+- Preserve the 38 non-canvas asset/project/entity/audio/narrative tools and historical database rows.
+- Archive the full old implementation and deployed snapshot in legacy-full-20261031.
+- Keep unknown outcomes recoverable without automatic paid resubmission; never infer rights from generation success.
+
+
 ## 0.3.0 - 2026-10-07
 
 ### Added

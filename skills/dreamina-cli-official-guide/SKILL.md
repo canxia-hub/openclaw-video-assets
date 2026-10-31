@@ -1,11 +1,11 @@
 ---
 name: "dreamina-cli-official-guide"
-description: "Dreamina/即梦 CLI：代理清空、模型与分辨率硬约束、白名单探测、两代付费门与预算乘法、画布直驱"
+description: "Dreamina/即梦 CLI：代理清空、模型与分辨率硬约束、白名单探测、双CLI无前端入口、付费门与恢复、配置运维纪律"
 ---
 
 # Dreamina CLI 指南
 
-何时用：用官方 `dreamina`（即梦）CLI 做图像/视频生成、查积分、管理会话与任务历史；在花积分前确认参数组合；把生成结果接回 video-assets 画布与资产库时。
+何时用：用官方 `dreamina`（即梦）CLI 做图像/视频生成、查积分、管理会话与任务历史；在花积分前确认参数组合；把生成结果接回 video-assets 资产与项目引用时。
 
 相关技能的状态：改/验付费队列接线 → `video-assets-paid-path`；崩溃恢复状态机 → `durable-job-crash-recovery`；外部调用脱敏/超时 → `provider-call-hardening`。**这三个是 Workshop 候选，尚未激活**；写成「去用某技能」不代表它已可调用，先确认该技能是否为现役。
 
@@ -35,20 +35,9 @@ $env:HTTP_PROXY = ''; $env:HTTPS_PROXY = ''; $env:ALL_PROXY = ''
 
 ## 版本与升级
 
-seedance2.5 需 **1.4.18（build ec1b9fa，2026-09-09）** 起；1.4.8（build 54f1bdf）只支持 2.0 家族。
+安装或升级二进制时读取 [版本与升级](references/version-and-upgrade.md)，先检查运行任务并保留回滚版本。日常调用以实时 version/help 为准。
 
-升级流程（2026-09-19 已验证）：
-
-1. 读元数据 `.../ljhwZthlaukjlkulzlp/version.json`。
-2. 下载官方安装脚本 `https://jimeng.jianying.com/cli` 并先审查：它只做「下载二进制 → 替换 → 写 PATH → 同步 SKILL.md 与 version.json」。
-3. 下载 `.../dreamina_cli_beta/dreamina_cli_windows_amd64.exe`，校验 sha256 后再装。
-4. 替换前确认没有正在跑的生成：`Get-Process dreamina` 看清进程再决定；正在跑的任务被中断会影响该次产出（不代表已提交的任务会被重算）。**只针对要替换的二进制**，不要用笼统的「杀掉所有相关进程」做法。
-5. 备份旧版到 `~/.dreamina_cli/backup/`，替换 `~/bin/dreamina.exe`，同步 `~/.dreamina_cli/version.json` 与 `~/.dreamina_cli/dreamina/SKILL.md`。
-6. 复验 `dreamina version` 与 `dreamina user_credit`。
-
-升级后首次 `user_credit` 可能返回全 0，属瞬态（同轮第二次调用恢复）；不要据此判定登录失效。
-
-## 模型与参数（1.4.18）
+## 模型与参数（1.4.18 起，1.4.19 同）
 
 ### 视频
 
@@ -66,6 +55,8 @@ seedance2.5 需 **1.4.18（build ec1b9fa，2026-09-09）** 起；1.4.8（build 5
 - `seedance2.0_vip` → 720p / 1080p / 4k。
 - **其余模型（含 `2.0fast` / `2.0mini` / `1.0fast` / `1.5pro`）→ 只有 720p**；1.0fast 5-10s、1.5pro 5-12s、2.0 家族 4-15s。
 - 推论：**480p 只有 `seedance2.5` 能给**；不存在「2.0fast + 480p」。写规格前按本表核对，别凭型号直觉填。
+
+**家主偏好（2026-10-12）**：日常生成优先 `seedance2.0fast_vip` 与 `seedance2.5`；`seedance2.0fast` 排队慢且出现过平台侧任务被删（`task was deleted`，已退款），不作为默认。
 
 ### 图像
 
@@ -107,7 +98,7 @@ help 与后端受理范围**双向不一致**。增删规格前用零成本探�
 
 凡保留兼容别名（模型/参数/工具名）都须写明「为何保留 + 移除前提」；**不编固定到期日**——本技能不掌握官方退役时间表。
 
-## 上传文件的扩展名（关键坑）
+## 上传文件的扩展名与体积（关键坑）
 
 CLI 按**扩展名**判定上传类型。插件的内容寻址库文件名以 `.blob` 结尾，直接上传必失败：
 
@@ -117,43 +108,40 @@ upload resource "...blob": upload image: upload phase, no file upload
 
 插件已内建修复：上传前把 `.blob` 物化为带正确扩展名的缓存文件（mime 优先，magic bytes 回退）。**手写 argv 时同样要先把文件复制成正确扩展名**。
 
-## 插件路由
+**体积坑（两次独立观察）**：2026-09 一批约 1.95MB PNG 上传阶段多次失败、压到约 190KB JPG 后通过；2026-10-12 multimodal2video 双图 384KB/338KB PNG 同样 `upload phase, no file upload`，压成 48KB/35KB JPG 后一次通过。**仍只是个案观察，不是「PNG 必失败」的普适结论**；但 CLI 直驱多图输入时默认先转小体积 JPG，失败时按「先查扩展名 → 再压体积」顺序处置。
 
-画布直驱顺序：`video_canvas_generation_package` → `video_canvas_generation_handoff` → `video_canvas_dreamina_cli_plan`（只出命令）→ `video_canvas_dreamina_cli_generate_video` / `_generate_image` / `_upscale_image`（真生成/放大）→ 回填 `video_asset_ingest` / `video_asset_update_rights` / `video_asset_classify` / `video_project_add_asset_ref` / `video_canvas_upsert_shape` / `video_canvas_link_shapes` / `video_canvas_lint`。
+## 双 CLI 无前端工具路线
 
-模型/分辨率枚举由 `src/capability-registry.js` 单一规格表派生到工具 schema，改规格只需改表；新增工具须同步三处（`src/index.js` 注册、`openclaw.plugin.json` 的 `contracts.tools`、`TOOL_TITLES_ZH`/`TOOL_DESCRIPTIONS_ZH`），否则 `check:preflight` 报清单不匹配。
+1. 旧 dreamina.exe 使用 `video_dreamina_cli`；官方 dreamina-canvas.exe 使用 `video_dreamina_canvas_cli`。二者的命令、模型、认证和参数拼写互不混用。官方画布 CLI 的细节以其已安装官方技能与实时 schema 为准。
+2. 默认 `execute=false` 返回零 I/O 计划；查询时传 `execute=true`。command 为规范子命令，argv 为逐项 token，不是 shell 字符串。
+3. 先执行 version/help；官方 CLI 另外读 schema/auth status，再发现 model/voice。工具不要求内部 canvas_id，也不打开或检查前端。
+4. 真实写操作使用稳定 operation_key；付费另外传 accept_credit_spend=true，并满足宿主可信身份、插件预算和供应商积分批准。官方付费命令显式复用 submit-id；旧 CLI 生成强制 poll=0。
+5. 有结果不确定或进程超时，复用相同 operation_key 读取已记录结果／恢复身份；查询原 submitId／operationRef，不换 key 自动重提。
+6. 持久文件验证后走 video_asset_ingest → 分类／来源授权 → video_project_add_asset_ref。引用使用资产版本、项目与官方公开节点／资源身份，不创建内部槽位、不写回 Workbench。
+7. 使用 .blob 资产作为 CLI 文件输入时，先物化为正确媒体扩展名；授权与风险按来源证据记录，不因为生成成功自动 cleared。
 
-**画布门禁判读**（2026-09-20 修复后行为，取代早前「写回产出必须先分类」）：写回产出 `draft_output` 卡片**不参与**下一轮交接包输入校验（不触发 taxonomy/授权/风险门，不计入输入上限）；补分类仍是治理要求但已非生成前置。仍被 `生成输入缺少 taxonomy 分类` 挡住时，先确认卡片是否进了**真正的输入槽**。阻断项与 `execute` 无关：`execute=false` 即返回完整 `blockers`，判读门禁用零成本 dry-run。`blockers` 里的模型名应与请求一致（`... for model <model>`），不一致即为版本未下沉的指纹。
-
-## 两代形态：先分清「磁盘上装了什么」和「进程实际在跑什么」
-
-- **A · 当前已安装**（2026-09-20 P4 基线，`~/.openclaw/extensions/video-assets`）：画布直驱工具**直接调 CLI**（`execFile`）；真跑开关是调用参数 `execute=true` 且 `accept_credit_spend=true`；跑前跑后各一次 `user_credit` 取差额。**没有持久队列/预算台账/`sop-v2-*` 模块**。
-- **B · 候选**（REN-09/10/11 代码）：有队列、台账预算门、SOP v2 链、可信上下文；在部署前**不可调用**。缺这些模块**不代表**供应商真机历史验收没发生过；反过来，历史验收**也不能**证明当前部署的这个构建具备那些行为。
-
-两代的**工具面与参数面完全相同**（2026-09-24 独立复算）：69 个工具名一致（含 widget 的 `rawTool` 注册形式）、**69/69 工具的参数名逐项一致**；候选另有 REN-04 合并契约面（17 个 operation、`additionalProperties:false`、`RESIDENT_MAX 10`），69 个旧工具名全部解析到唯一 operation，**0 参数丢失**，8 个音频工具的 schema 由共享 helper 构造（`includeCanvas` 是构造开关，不是用户参数）。判据脚本见 `REN-12/scripts/32/33/34`。
-> 勘误：本技能早前写「各 68 工具」，是我自己的提取脚本漏认 `rawTool(` 注册形式所致；真实数是 69，与 `contracts.tools` 声明、运行时目录三处一致。
-
-**判代法（证据强度分层）**：① 强——比对磁盘副本哈希与进程实际加载的模块指纹；② 中——功能探测（`video_canvas_dreamina_cli_plan` + `execute=false`，看返回是否含队列/预算字段）；③ 弱——只看进程启动时间与文件 mtime 的先后（热加载/多进程/替换都能让两者同时成立却不一致）。**只用①或②下结论**；③ 只能排除明显旧进程。**磁盘副本 = 运行态**这个假设本身不成立。
-
-**预演插件替换/回滚时只拷「代码面」**：`src`、`sql`、`scripts`、`package.json`、`openclaw.plugin.json`、`README.md`。已安装目录里的 `ui-dist*` 构建树合计数百 MB，与恢复机制无关；整目录拷贝会把一次预演从约 2 MB 撑到数百 MB。报告里显式写出拷贝范围与排除项，别让对方读成「整个目录都验过」。
+旧内部画布、Workbench、Widget 和 video_canvas_* 工具已归档；不以旧画布技能或前端截图作为执行门。
 
 ## 付费门
 
 - **队列默认关闭**：`generationJobs.enabled` 须显式 `true`，否则 `GENERATION_JOBS_DISABLED`；`maxCredits` 默认 `0` → 正数估算被 `GENERATION_BUDGET_EXCEEDED` 拒（均在**建单之前**拒绝）。
-- **预算要按「单次估算 × 该作业的 provider 调用次数」配，别按「一作业一估算」配**：预留是**每次调用**各扣一次（提交 1 次 + 每轮状态查询各 1 次），按一作业一估算配会在第 3 次调用被拒；更糟的是这个拒绝会被前置检查吞掉、表面报成 `GENERATION_POLL_UNRESOLVED`（看着像查询未决，实为预算耗尽），排查方向会被带偏。网关层与队列层两层额度都要按同一乘法给。配完先用本地替身路径跑一图一视频，核对「每作业提交恰 1 次 + 同 run 重入 0 新提交」，再考虑真机。
+- **新插件成本入口**：dreamina.cli.execute 与 dreamina.canvas.execute 分别配置经确认的成本证据；缺 security.generation.budget.estimates 对应值会拒绝。一次付费提交只预留一次估算；只读恢复不重提付费任务，不按轮询次数重复预留。既有预算不因本次迁移自动扩大。
 - **预算是本地估算台账，不是供应商硬限**：建单按 `max(调用方 estimate_credits, 注册表参考值)` 预留；`actual_credits` 完成后才写入，**该上限无法阻止供应商实际扣费超过估算**，只能事后对账。注册表参考值自带 `unverified-reference`，不是价格证据。
 - 创作面另有 `security.generation` 授权门（默认 `mode=enforce`、`allowSurfaces=[]`、`ledger=none`）；缺 `trusted=true`/`actor_id`/`scopes`（复数数组）即拒。
+- **本机当前配置（2026-10-13 起）**：`security.generation.budget.totalCredits=3000`、`generationJobs.maxCredits=3000`（家主批准，由 170 扩到 3000）。调整配置遵循 `references/plugin-ops-discipline.md` §6（逐项复核）与 §7（需要完整重启，热重载不可靠）。
 
 ## 批量生成与两类假失败
 
 1. `get_history_by_ids failed: ret=1015`——本地查询历史失败，**任务通常已提交成功**。补救：`list_task` 找 `submit_id`，再 `query_result --submit_id=<id> --download_dir=<dir>` 下载。
-2. `gen_status=fail` 且 `fail_reason` 含 `upload phase, no file upload`——先查扩展名；另有一次观察：同一批 1.95MB PNG 提交出现多次上传阶段失败，压到约 190KB JPG 后该批连续通过。**这是单次观察，不是"PNG 有 1/3 失败率"的普适结论**；遇到失败按「先查扩展名 → 再压体积」的处置顺序做，不要引用成概率。
+2. `gen_status=fail` 且 `fail_reason` 含 `upload phase, no file upload`——先查扩展名，再压体积（见「上传文件的扩展名与体积」两次观察）。
 3. 每镜跑完立刻 `list_task` 复核；实测中**失败尝试没有产生 `credit_count`**（属观察口径，不是对供应商计费规则的声明）。
-4. 成本基准（记录值，非当前报价）：seedance2.5 480p/4s = 48、720p/5s = 100；2.0 家族同规格约 25；图像 5.0Pro 2k = 8。
+4. **下载阶段偶发 CDN 超时**（2026-10-12 实测）：`do request: Get "https://v9-artist.vlabvod.com/...": dial tcp ...: i/o timeout` 连续两次后 CLI 自动换 `v3-artist` 域名第三次成功。下载失败 ≠ 任务失败，重查 `query_result` 即可，不要重复提交。
+5. **平台侧任务被删**（2026-10-12 实测）：`gen_status=fail, fail_reason=generation failed: task was deleted`（seedance2.0fast 排队数分钟后），所扣积分当日退回账户。遇到此类失败换 fast_vip/2.5 重提即可。
+6. 成本基准（记录值，非当前报价）：seedance2.5 480p/4s = 48、720p/5s = 100（text2video 与 multimodal2video 同价，2026-10-12/13 复核一致）；2.0 家族同规格约 25；图像 5.0Pro 2k = 8。
 
 ## 安全门
 
-- **真机入口与计划入口分开放**：真机分支走**独立脚本** + 两道钥匙——授权记录（`authorized=true` 且带 `actor_id` / `expires_at` / `max_credits` / 条目白名单）**再加**命令行显式 `--execute-live`；默认分支只做计划：不建库、不建单、0 次调用。授权记录随包落盘时就是 `authorized=false`，运行前由人填。**别把探针脚本里的 JSON 开关当真机入口**——那样一个字段改错就会付钱；`--local-standin` 之类替身参数在真机分支必须被直接拒。
+- **计划与真机分离**：新 CLI 工具默认零 I/O 计划；只有 execute=true 才调用二进制。付费须 accept_credit_spend=true、可信宿主身份、已配置预算，以及官方 CLI 要求的报价／积分批准。用 operation_key 与 submit-id 恢复同一任务，不用独立脚本参数绕过插件门。
 - 真生成前先 `user_credit`；`execute=false` / `accept_credit_spend=false` 只用于计划与 schema 校验。
 - 提交成功判据不是退出码：需 `submit_id` 存在且 `gen_status` 为 `querying` 或 `success`；`fail` 时读 `fail_reason` 并回报。
 - 返回 `AigcComplianceConfirmationRequired` 时，先在即梦 Web 端完成一次性授权确认再重试。
@@ -164,7 +152,7 @@ upload resource "...blob": upload image: upload phase, no file upload
 
 - 登录类错误先确认走的是 CLI 直连而非 CDP：CLI 登录态与网页登录态互相独立。
 - 插件工具不可见：重启网关后重查工具枚举；**网关重启在当前 agent turn 结束后才落地**，turn 内轮询会误判未重启。
-- 改 `src/*.js` 的生效判定、回退点核验、文档漂移自查见 `references/plugin-ops-discipline.md`。
+- 改 `src/*.js` 的生效判定、回滚点核验、文档漂移自查，以及 openclaw.json 配置编辑纪律、热重载失效恢复、预算门判读，见 `references/plugin-ops-discipline.md`（§6/§7/§8 为 2026-10-12/13 新增）。
 - 日志：`~/.dreamina_cli/logs/dreamina.log*`；插件自检：`check:dreamina-cli-video`、`check:dreamina-cli-image`、`check:dreamina-model-specs`、`check`。
 
 ## 已验证事实索引
@@ -172,6 +160,11 @@ upload resource "...blob": upload image: upload phase, no file upload
 | 事实 | 日期 | 出处 |
 |---|---|---|
 | CLI 1.4.18 build ec1b9fa；480p 仅 2.5、其余仅 720p；upscale 2k/4k/8k | 2026-09-24 | `dreamina --help` 快照：`REN-12/evidence/20-cli-help/` |
+| CLI 1.4.19（build 1d0bd17）升级；`estimated_remaining_seconds` 偏保守只作数量级参考 | 2026-10-12 | 本机升级记录 + 当日三次真机生成复验 |
+| text2video/image2video/multimodal2video 三路径真机跑通（seedance2.5 480p/4s=48 与 720p/5s=100） | 2026-10-12 | submit_id：e09b4ba3 / 3cf1f4a6 / b1bfe829 |
+| 插件画布直驱全链路（生成→自动入库→写回画布→补分类清权连线→lint 0/0/0） | 2026-10-13 | submit_id：384ee05a；asset_58ae33be；canvas_52e4569e |
+| 上传体积坑二次观察（PNG 384KB/338KB 失败 → JPG 48KB/35KB 通过）与 CDN 下载超时自动换域名 | 2026-10-12 | step12/13/14 脚本日志 |
+| 预算门配置扩至 3000 并生效；热重载 drain 超时需完整重启恢复 | 2026-10-12/13 | openclaw.json:1823/1847；`references/plugin-ops-discipline.md` §6/§7/§8 |
 | 69 工具名 + 69/69 参数名一致；契约面 17 ops、0 参数丢失 | 2026-09-24 | `REN-12/evidence/32/33/34-*.json` |
 | 预算须按「估算 × 调用次数」预留；按一作业一估算会在第 3 次调用被拒并伪装成 `GENERATION_POLL_UNRESOLVED` | 2026-09-24 | `REN-12/runtime-budget-runbook.md` §5.1（本地替身实测，未调供应商） |
 | 真机入口双钥匙（授权记录 + `--execute-live`）、默认分支 0 调用、替身被拒 | 2026-09-24 | `REN-12/evidence/93/entry-selftest-report.json`（28 项） |
