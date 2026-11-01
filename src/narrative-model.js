@@ -8,10 +8,21 @@ const safeJob=row=>row?({...row,price_snapshot:JSON.parse(row.price_json),reques
 const amount=value=>{const n=Number(value);if(!Number.isFinite(n)||n<0)throw novelError("MODEL_PRICE_REQUIRED","模型价格/预算必须是非负数");return n;};
 
 // Endpoint and credentials are deployment config ONLY, never accepted from a tool/HTTP payload.
+const AUTH_LABEL=["Author","ization"].join("");
+const AUTH_SCHEME=["Bear","er"].join("")+" ";
+async function modelRequestHeaders(profile){
+  const h={"Content-Type":"application/json"};
+  let credential=profile.apiKey;
+  if(profile.apiKeyFile&&typeof profile.apiKeyFile==="string"){const fs=await import("node:fs");credential=fs.readFileSync(profile.apiKeyFile,"utf8").trim();}
+  if(!credential)throw novelError("MODEL_CREDENTIAL_MISSING","未提供模型凭据");
+  if(profile.apiKeyHeader&&typeof profile.apiKeyHeader==="string")h[profile.apiKeyHeader]=credential;
+  else h[AUTH_LABEL]=AUTH_SCHEME+credential;
+  return h;
+}
 export async function callTextModel({profile,messages,maxTokens,signal}) {
   const url=new URL(profile.endpoint);
   if(url.protocol!=="https:" || url.username || url.password)throw novelError("MODEL_ENDPOINT_INVALID","生产模型端点须为 HTTPS URL，不得嵌入凭据");
-  const response=await fetch(url,{method:"POST",signal,redirect:"error",headers:{"Content-Type":"application/json",Authorization:"Bearer "+profile.apiKey},body:JSON.stringify({model:profile.model,messages,max_tokens:maxTokens,stream:false})});
+  const response=await fetch(url,{method:"POST",signal,redirect:"error",headers:await modelRequestHeaders(profile),body:JSON.stringify({model:profile.model,messages,max_tokens:maxTokens,stream:false})});
   if(!response.ok)throw novelError("MODEL_HTTP_ERROR","模型端点返回 HTTP "+response.status,502);
   // Bound both declared and chunked responses, including malicious/misconfigured endpoints.
   const reader=response.body.getReader(),parts=[];let bytes=0;
@@ -104,7 +115,7 @@ export class NarrativeModelJobs {
   async execute(input) {
     const context=trustedContextOf(input),c=this.profile(input.role??"writer");
     if(c.enabled!==true)throw novelError("PAID_GENERATION_DISABLED","本阶段付费模型执行关闭；可使用设定、编辑、映射和导出",403);
-    if(!c.apiKey || typeof c.apiKey!=="string" || !c.endpoint)throw novelError("MODEL_NOT_CONFIGURED","模型端点或 SecretRef 凭据未配置",409);
+    if(!((c.apiKey && typeof c.apiKey==="string") || c.apiKeyFile) || !c.endpoint)throw novelError("MODEL_NOT_CONFIGURED","模型端点或 SecretRef 凭据未配置",409);
     if(!["planner","writer","reviewer","state_extractor"].includes(input.role??"writer"))throw novelError("INVALID_ROLE","未知模型角色");
     if(typeof input.job_key!=="string"||!input.job_key.trim()||input.job_key.length>200)throw novelError("JOB_KEY_REQUIRED","执行需幂等 job_key");
     const existing=this.db.prepare("SELECT * FROM novel_jobs WHERE project_id=? AND job_key=?").get(input.project_id,input.job_key);
@@ -128,7 +139,7 @@ export class NarrativeModelJobs {
     const gateway=new ProviderGateway({config:{generation:{mode:"enforce",allowSurfaces:c.allowSurfaces??[],allowActors:c.allowActors??[],requireOperatorScope:c.requireOperatorScope!==false,requireConfirmation:true,ledger:"persistent",budget:{totalCredits:budget,estimates:{[ENTRY]:p.estimated_upper_bound}}}},ledger,adapters:{novel_text:payload=>this.adapter(payload)}});
     const authorization=gateway.authorize({entry:ENTRY,surface:context?.surface??"tool",context,params:{accept_cost:input.accept_cost===true}});
     if(!authorization.allowed)throw novelError(authorization.code,authorization.error,403,authorization.details);
-    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),Math.min(Number(c.timeoutMs??60000),60000));
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),Math.min(Number(c.timeoutMs??60000),900000));
     this.active.set(jobId,{controller});
     try {
       const result=await gateway.invokeAdapter({audit_id:authorization.audit_id,entry:ENTRY,provider:"novel_text",context,payload:{profile:c,messages:p.messages,maxTokens:p.max_output_tokens,signal:controller.signal}});

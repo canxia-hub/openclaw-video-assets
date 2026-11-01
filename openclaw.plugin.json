@@ -2,7 +2,7 @@
   "id": "video-assets",
   "name": "视频资产与CLI",
   "description": "Agent-only资产后端，独立Dreamina与官方即梦画布CLI；无HTTP工作台、内部画布或Widget。",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "contracts": {
     "tools": [
       "video_asset_ingest",
@@ -488,10 +488,16 @@
                 "minimum": 1,
                 "maximum": 2000000
               },
+              "apiKeyFile": {
+                "type": "string"
+              },
+              "apiKeyHeader": {
+                "type": "string"
+              },
               "timeoutMs": {
                 "type": "integer",
                 "minimum": 1000,
-                "maximum": 60000
+                "maximum": 900000
               },
               "allowActors": {
                 "type": "array",

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — 2026-11-02
+
+- Narrative text model credentials: support `apiKeyFile` (read the key from a local file at request time) alongside inline `apiKey`, so deployment secrets never need to live inside the gateway config.
+- Support custom `apiKeyHeader` (for example `x-goog-api-key`) while defaulting to `Authorization: Bearer`.
+- Raise the `narrative.model.timeoutMs` cap from 60s to 900s for slow reasoning models; the request still aborts at the configured timeout.
+- `MODEL_NOT_CONFIGURED` now accepts either `apiKey` or `apiKeyFile` as the credential source.
+
 ## 0.4.0 — 2026-10-31
 
 - Replace internal canvas/Workbench/Widget with Agent-only runtime; zero HTTP registrations.
